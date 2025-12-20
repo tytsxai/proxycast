@@ -77,17 +77,23 @@ impl TrayIcons {
         let default = Self::load_default_icon(app);
 
         // 尝试加载各状态图标
+        // 为了保持一致性，所有状态都使用应用主图标
         let tray_icons_dir = resource_path.join("icons").join("tray");
         info!("托盘图标目录: {:?}", tray_icons_dir);
 
-        let running = Self::load_png_file(&tray_icons_dir.join("tray-running.png"));
-        let warning = Self::load_png_file(&tray_icons_dir.join("tray-warning.png"));
-        let error = Self::load_png_file(&tray_icons_dir.join("tray-error.png"));
-        let stopped = Self::load_png_file(&tray_icons_dir.join("tray-stopped.png"));
+        // 检查是否有自定义托盘图标，如果没有则使用默认图标
+        let running = Self::load_png_file(&tray_icons_dir.join("tray-running.png"))
+            .or_else(|| Some(default.clone()));
+        let warning = Self::load_png_file(&tray_icons_dir.join("tray-warning.png"))
+            .or_else(|| Some(default.clone()));
+        let error = Self::load_png_file(&tray_icons_dir.join("tray-error.png"))
+            .or_else(|| Some(default.clone()));
+        let stopped = Self::load_png_file(&tray_icons_dir.join("tray-stopped.png"))
+            .or_else(|| Some(default.clone()));
 
-        if running.is_none() || warning.is_none() || error.is_none() || stopped.is_none() {
-            warn!("部分托盘图标加载失败，将使用默认图标作为后备");
-            // 尝试从内嵌资源加载
+        // 如果所有托盘图标都加载失败，使用内嵌资源
+        if running.is_none() && warning.is_none() && error.is_none() && stopped.is_none() {
+            warn!("所有托盘图标加载失败，将使用内嵌资源");
             return Self::load_embedded();
         }
 
@@ -104,14 +110,16 @@ impl TrayIcons {
     fn load_embedded() -> Self {
         info!("从内嵌资源加载托盘图标");
 
+        // 使用应用主图标作为默认托盘图标
         let default = Image::from_bytes(include_bytes!("../../icons/32x32.png"))
             .expect("内嵌默认图标加载失败");
 
-        // 尝试加载内嵌的托盘图标
-        let running = Image::from_bytes(include_bytes!("../../icons/tray/tray-running.png")).ok();
-        let warning = Image::from_bytes(include_bytes!("../../icons/tray/tray-warning.png")).ok();
-        let error = Image::from_bytes(include_bytes!("../../icons/tray/tray-error.png")).ok();
-        let stopped = Image::from_bytes(include_bytes!("../../icons/tray/tray-stopped.png")).ok();
+        // 所有状态都使用应用主图标，保持一致性
+        // macOS 托盘图标建议使用单色 Template 图标，但为了跨平台一致性，使用应用图标
+        let running = Image::from_bytes(include_bytes!("../../icons/32x32.png")).ok();
+        let warning = Image::from_bytes(include_bytes!("../../icons/32x32.png")).ok();
+        let error = Image::from_bytes(include_bytes!("../../icons/32x32.png")).ok();
+        let stopped = Image::from_bytes(include_bytes!("../../icons/32x32.png")).ok();
 
         Self {
             running,
