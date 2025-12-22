@@ -41,6 +41,7 @@ use crate::streaming::{
     StreamConfig, StreamContext, StreamError, StreamFormat as StreamingFormat, StreamManager,
     StreamResponse,
 };
+use futures::StreamExt;
 
 /// 根据凭证调用 Provider (Anthropic 格式)
 ///

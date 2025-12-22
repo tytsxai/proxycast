@@ -1541,7 +1541,14 @@ pub fn run() {
     let flow_replayer_state = FlowReplayerState(flow_replayer);
 
     // 初始化会话管理器
-    let db_path = database::get_db_path();
+    let db_path = match database::get_db_path() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!("获取数据库路径失败，已中止启动: {}", e);
+            eprintln!("获取数据库路径失败，已中止启动: {}", e);
+            return;
+        }
+    };
     let session_manager =
         Arc::new(SessionManager::new(db_path.clone()).expect("Failed to create SessionManager"));
     let session_manager_state = SessionManagerState(session_manager);

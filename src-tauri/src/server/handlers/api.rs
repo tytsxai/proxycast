@@ -14,13 +14,19 @@
 //! - 需求 5.3: 流中发生错误时发送错误事件并优雅关闭流
 
 use axum::{
+    body::Body,
     extract::State,
-    http::{HeaderMap, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
 
 use crate::converter::anthropic_to_openai::convert_anthropic_to_openai;
+use crate::flow_monitor::{
+    ClientInfo, FlowError, FlowErrorType, FlowMetadata, FlowType, InterceptAction, InterceptType,
+    LLMFlow, LLMRequest, LLMResponse, Message, MessageContent, MessageRole, RequestParameters,
+    RoutingInfo, TokenUsage,
+};
 use crate::models::anthropic::AnthropicMessagesRequest;
 use crate::models::openai::ChatCompletionRequest;
 use crate::processor::RequestContext;
@@ -29,8 +35,12 @@ use crate::server_utils::{
     build_anthropic_response, build_anthropic_stream_response, message_content_len,
     parse_cw_response, safe_truncate,
 };
+use crate::streaming::StreamFormat as StreamingFormat;
+use crate::ProviderType;
 
 use super::{call_provider_anthropic, call_provider_openai};
+use chrono::Utc;
+use std::collections::HashMap;
 
 // ============================================================================
 // Flow 捕获辅助函数
