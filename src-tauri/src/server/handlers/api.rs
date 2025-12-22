@@ -635,8 +635,9 @@ pub async fn chat_completions(
         }
     }
 
-    // 获取当前默认 provider（用于凭证池选择）
+    // 获取当前默认 provider（用于凭证池选择的兜底）
     let default_provider = state.default_provider.read().await.clone();
+    let routed_provider = provider.to_string();
 
     // 记录路由结果
     state.logs.write().await.add(
@@ -647,13 +648,24 @@ pub async fn chat_completions(
         ),
     );
 
-    // 尝试从凭证池中选择凭证
+    // 优先按路由结果选择凭证；如果没有可用凭证，再回退到默认 provider。
     let credential = match &state.db {
         Some(db) => state
             .pool_service
-            .select_credential(db, &default_provider, Some(&request.model))
+            .select_credential(db, &routed_provider, Some(&request.model))
             .ok()
-            .flatten(),
+            .flatten()
+            .or_else(|| {
+                if routed_provider != default_provider {
+                    state
+                        .pool_service
+                        .select_credential(db, &default_provider, Some(&request.model))
+                        .ok()
+                        .flatten()
+                } else {
+                    None
+                }
+            }),
         None => None,
     };
 
@@ -662,7 +674,9 @@ pub async fn chat_completions(
         state.logs.write().await.add(
             "info",
             &format!(
-                "[ROUTE] Using pool credential: type={} name={:?} uuid={}",
+                "[ROUTE] Using pool credential: routed_provider={} default_provider={} type={} name={:?} uuid={}",
+                routed_provider,
+                default_provider,
                 cred.provider_type,
                 cred.name,
                 &cred.uuid[..8]
@@ -1424,8 +1438,9 @@ pub async fn anthropic_messages(
         }
     }
 
-    // 获取当前默认 provider（用于凭证池选择）
+    // 获取当前默认 provider（用于凭证池选择的兜底）
     let default_provider = state.default_provider.read().await.clone();
+    let routed_provider = provider.to_string();
 
     // 记录路由结果
     state.logs.write().await.add(
@@ -1436,16 +1451,24 @@ pub async fn anthropic_messages(
         ),
     );
 
-    // 尝试从凭证池中选择凭证
+    // 优先按路由结果选择凭证；如果没有可用凭证，再回退到默认 provider。
     let credential = match &state.db {
-        Some(db) => {
-            // 根据 default_provider 配置选择凭证
-            state
-                .pool_service
-                .select_credential(db, &default_provider, Some(&request.model))
-                .ok()
-                .flatten()
-        }
+        Some(db) => state
+            .pool_service
+            .select_credential(db, &routed_provider, Some(&request.model))
+            .ok()
+            .flatten()
+            .or_else(|| {
+                if routed_provider != default_provider {
+                    state
+                        .pool_service
+                        .select_credential(db, &default_provider, Some(&request.model))
+                        .ok()
+                        .flatten()
+                } else {
+                    None
+                }
+            }),
         None => None,
     };
 
@@ -1454,7 +1477,9 @@ pub async fn anthropic_messages(
         state.logs.write().await.add(
             "info",
             &format!(
-                "[ROUTE] Using pool credential: type={} name={:?} uuid={}",
+                "[ROUTE] Using pool credential: routed_provider={} default_provider={} type={} name={:?} uuid={}",
+                routed_provider,
+                default_provider,
                 cred.provider_type,
                 cred.name,
                 &cred.uuid[..8]

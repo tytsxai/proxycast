@@ -410,7 +410,7 @@ async fn handle_ws_chat_completions(
     let mut ctx = RequestContext::new(request.model.clone()).with_stream(request.stream);
 
     // 使用 RequestProcessor 解析模型别名和路由
-    let _provider = state.processor.resolve_and_route(&mut ctx).await;
+    let provider = state.processor.resolve_and_route(&mut ctx).await;
 
     // 更新请求中的模型名为解析后的模型
     if ctx.resolved_model != ctx.original_model {
@@ -430,16 +430,28 @@ async fn handle_ws_chat_completions(
         }
     }
 
-    // 获取默认 provider
+    // 获取默认 provider（用于凭证池选择的兜底）
     let default_provider = state.default_provider.read().await.clone();
+    let routed_provider = provider.to_string();
 
-    // 尝试从凭证池中选择凭证
+    // 优先按路由结果选择凭证；如果没有可用凭证，再回退到默认 provider。
     let credential = match &state.db {
         Some(db) => state
             .pool_service
-            .select_credential(db, &default_provider, Some(&request.model))
+            .select_credential(db, &routed_provider, Some(&request.model))
             .ok()
-            .flatten(),
+            .flatten()
+            .or_else(|| {
+                if routed_provider != default_provider {
+                    state
+                        .pool_service
+                        .select_credential(db, &default_provider, Some(&request.model))
+                        .ok()
+                        .flatten()
+                } else {
+                    None
+                }
+            }),
         None => None,
     };
 
@@ -543,7 +555,7 @@ async fn handle_ws_anthropic_messages(
     let mut ctx = RequestContext::new(request.model.clone()).with_stream(request.stream);
 
     // 使用 RequestProcessor 解析模型别名和路由
-    let _provider = state.processor.resolve_and_route(&mut ctx).await;
+    let provider = state.processor.resolve_and_route(&mut ctx).await;
 
     // 更新请求中的模型名为解析后的模型
     if ctx.resolved_model != ctx.original_model {
@@ -563,16 +575,28 @@ async fn handle_ws_anthropic_messages(
         }
     }
 
-    // 获取默认 provider
+    // 获取默认 provider（用于凭证池选择的兜底）
     let default_provider = state.default_provider.read().await.clone();
+    let routed_provider = provider.to_string();
 
-    // 尝试从凭证池中选择凭证
+    // 优先按路由结果选择凭证；如果没有可用凭证，再回退到默认 provider。
     let credential = match &state.db {
         Some(db) => state
             .pool_service
-            .select_credential(db, &default_provider, Some(&request.model))
+            .select_credential(db, &routed_provider, Some(&request.model))
             .ok()
-            .flatten(),
+            .flatten()
+            .or_else(|| {
+                if routed_provider != default_provider {
+                    state
+                        .pool_service
+                        .select_credential(db, &default_provider, Some(&request.model))
+                        .ok()
+                        .flatten()
+                } else {
+                    None
+                }
+            }),
         None => None,
     };
 
