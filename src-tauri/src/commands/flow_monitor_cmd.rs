@@ -552,6 +552,51 @@ pub async fn get_flow_monitor_status(
     })
 }
 
+/// 获取 Flow Monitor 状态（调试用）
+///
+/// **Validates: Requirements 10.1**
+///
+/// # Arguments
+/// * `monitor` - Flow 监控服务状态
+/// * `query_service` - 查询服务状态
+///
+/// # Returns
+/// * `Ok(FlowMonitorDebugInfo)` - 成功时返回调试信息
+/// * `Err(String)` - 失败时返回错误消息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FlowMonitorDebugInfo {
+    /// 是否启用
+    pub enabled: bool,
+    /// 活跃 Flow 数量
+    pub active_flow_count: usize,
+    /// 内存中的 Flow 数量
+    pub memory_flow_count: usize,
+    /// 最大内存 Flow 数量
+    pub max_memory_flows: usize,
+    /// 内存中的 Flow ID 列表（最多显示10个）
+    pub memory_flow_ids: Vec<String>,
+    /// 配置信息
+    pub config_enabled: bool,
+}
+
+#[tauri::command]
+pub async fn get_flow_monitor_debug_info(
+    monitor: State<'_, FlowMonitorState>,
+    query_service: State<'_, FlowQueryServiceState>,
+) -> Result<FlowMonitorDebugInfo, String> {
+    let config = monitor.0.config().await;
+    let recent_flows = query_service.0.get_recent(10).await;
+
+    Ok(FlowMonitorDebugInfo {
+        enabled: monitor.0.is_enabled().await,
+        active_flow_count: monitor.0.active_flow_count().await,
+        memory_flow_count: monitor.0.memory_flow_count().await,
+        max_memory_flows: config.max_memory_flows,
+        memory_flow_ids: recent_flows.into_iter().map(|f| f.id).collect(),
+        config_enabled: config.enabled,
+    })
+}
+
 /// 启用 Flow Monitor
 ///
 /// **Validates: Requirements 10.1**
@@ -566,6 +611,120 @@ pub async fn get_flow_monitor_status(
 pub async fn enable_flow_monitor(monitor: State<'_, FlowMonitorState>) -> Result<(), String> {
     monitor.0.enable().await;
     Ok(())
+}
+
+/// 创建测试 Flow 数据（仅用于调试）
+///
+/// **Validates: Requirements 10.1**
+///
+/// # Arguments
+/// * `count` - 要创建的测试 Flow 数量
+/// * `monitor` - Flow 监控服务状态
+///
+/// # Returns
+/// * `Ok(usize)` - 成功创建的 Flow 数量
+/// * `Err(String)` - 失败时返回错误消息
+#[tauri::command]
+pub async fn create_test_flows(
+    count: Option<usize>,
+    monitor: State<'_, FlowMonitorState>,
+) -> Result<usize, String> {
+    use crate::flow_monitor::{
+        ClientInfo, FlowMetadata, LLMRequest, Message, MessageRole, ProviderType,
+        RequestParameters, RoutingInfo,
+    };
+    use chrono::Utc;
+
+    let count = count.unwrap_or(5);
+    let mut created = 0;
+
+    for i in 0..count {
+        // 创建测试请求
+        let request = LLMRequest {
+            method: "POST".to_string(),
+            path: "/v1/chat/completions".to_string(),
+            headers: std::collections::HashMap::new(),
+            body: serde_json::json!({
+                "model": format!("gpt-4-test-{}", i),
+                "messages": [{"role": "user", "content": format!("测试消息 {}", i)}]
+            }),
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: crate::flow_monitor::MessageContent::Text(format!("测试消息 {}", i)),
+                tool_calls: None,
+                tool_result: None,
+                name: None,
+            }],
+            system_prompt: None,
+            tools: None,
+            model: format!("gpt-4-test-{}", i),
+            original_model: None,
+            parameters: RequestParameters {
+                temperature: Some(0.7),
+                top_p: Some(1.0),
+                max_tokens: Some(1000),
+                stop: None,
+                stream: false,
+                extra: std::collections::HashMap::new(),
+            },
+            size_bytes: 100 + i * 10,
+            timestamp: Utc::now(),
+        };
+
+        // 创建测试元数据
+        let metadata = FlowMetadata {
+            provider: ProviderType::OpenAI,
+            credential_id: Some(format!("test-cred-{}", i)),
+            credential_name: Some(format!("测试凭证 {}", i)),
+            retry_count: 0,
+            client_info: ClientInfo {
+                ip: Some("127.0.0.1".to_string()),
+                user_agent: Some("test-agent".to_string()),
+                request_id: Some(format!("test-req-{}", i)),
+            },
+            routing_info: RoutingInfo {
+                target_url: Some("https://api.openai.com".to_string()),
+                route_rule: None,
+                load_balance_strategy: None,
+            },
+            injected_params: None,
+            context_usage_percentage: Some(50.0),
+        };
+
+        // 启动 Flow
+        if let Some(flow_id) = monitor.0.start_flow(request, metadata).await {
+            // 模拟完成 Flow
+            let response = crate::flow_monitor::LLMResponse {
+                status_code: 200,
+                status_text: "OK".to_string(),
+                headers: std::collections::HashMap::new(),
+                body: serde_json::json!({
+                    "choices": [{"message": {"role": "assistant", "content": format!("测试响应 {}", i)}}]
+                }),
+                content: format!("测试响应 {}", i),
+                thinking: None,
+                tool_calls: Vec::new(),
+                usage: crate::flow_monitor::TokenUsage {
+                    input_tokens: 10 + i as u32,
+                    output_tokens: 20 + i as u32,
+                    cache_read_tokens: None,
+                    cache_write_tokens: None,
+                    thinking_tokens: None,
+                    total_tokens: 30 + i as u32 * 2,
+                },
+                stop_reason: Some(crate::flow_monitor::StopReason::Stop),
+                size_bytes: 200 + i * 15,
+                timestamp_start: Utc::now(),
+                timestamp_end: Utc::now(),
+                stream_info: None,
+            };
+
+            monitor.0.complete_flow(&flow_id, Some(response)).await;
+            created += 1;
+        }
+    }
+
+    Ok(created)
 }
 
 /// 禁用 Flow Monitor

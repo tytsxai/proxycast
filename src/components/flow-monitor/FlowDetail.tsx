@@ -62,14 +62,7 @@ export function FlowDetail({ flowId, onBack, onExport }: FlowDetailProps) {
   const [codeMode, setCodeMode] = useState(false);
 
   // 使用 Flow 操作 Hook
-  const {
-    copyText,
-    copyFlowContent,
-    copyRequest,
-    copyResponse,
-    exportFlow,
-    exporting,
-  } = useFlowActions();
+  const { copyText, copyFlowContent, exportFlow, exporting } = useFlowActions();
 
   useEffect(() => {
     const loadFlowDetail = async () => {
@@ -236,47 +229,6 @@ export function FlowDetail({ flowId, onBack, onExport }: FlowDetailProps) {
             >
               时间线
             </TabButton>
-
-            {/* 快捷复制按钮 */}
-            <div className="ml-auto flex items-center gap-1 px-2">
-              <button
-                onClick={async () => {
-                  console.log("复制请求按钮被点击");
-                  const result = await copyRequest(flow);
-                  console.log("复制结果:", result);
-                }}
-                className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground cursor-pointer"
-                title="复制请求"
-                type="button"
-              >
-                <Copy className="h-4 w-4" />
-              </button>
-              <button
-                onClick={async () => {
-                  console.log("复制响应按钮被点击");
-                  const result = await copyResponse(flow);
-                  console.log("复制结果:", result);
-                }}
-                className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                title="复制响应"
-                disabled={!flow.response}
-                type="button"
-              >
-                <Download className="h-4 w-4" />
-              </button>
-              <button
-                onClick={async () => {
-                  console.log("复制完整 JSON 按钮被点击");
-                  const result = await copyFlowContent(flow);
-                  console.log("复制结果:", result);
-                }}
-                className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground cursor-pointer"
-                title="复制完整 JSON"
-                type="button"
-              >
-                <FileJson className="h-4 w-4" />
-              </button>
-            </div>
           </div>
 
           {/* 内容区域 */}

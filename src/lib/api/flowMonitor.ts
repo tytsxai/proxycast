@@ -675,10 +675,25 @@ export const flowMonitorApi = {
     page: number = 1,
     pageSize: number = 20,
   ): Promise<FlowQueryResult> {
-    // 后端期望一个 request 对象，包含 filter, sort_by, sort_desc, page, page_size
+    // 如果有 filter_expression，使用表达式查询
+    if (filter.filter_expression) {
+      return invoke("query_flows_with_expression", {
+        request: {
+          filter_expr: filter.filter_expression,
+          sort_by: sortBy,
+          sort_desc: sortDesc,
+          page,
+          page_size: pageSize,
+        },
+      });
+    }
+
+    // 否则使用普通查询
+    // 移除 filter_expression 字段，因为后端不支持
+    const { filter_expression: _filterExpr, ...cleanFilter } = filter;
     return invoke("query_flows", {
       request: {
-        filter,
+        filter: cleanFilter,
         sort_by: sortBy,
         sort_desc: sortDesc,
         page,
@@ -953,26 +968,29 @@ export const flowMonitorApi = {
   },
 
   /**
-   * 将 Flow 导出为代码
+   * 获取 Flow Monitor 调试信息
    *
-   * @param flowId - Flow ID
-   * @param format - 代码格式 (curl, python, typescript, javascript)
-   * @returns 导出的代码
+   * @returns Flow Monitor 调试信息
    */
-  async exportFlowAsCode(
-    flowId: string,
-    format: CodeExportFormat,
-  ): Promise<string> {
-    const response = await invoke<{ code: string; format: CodeExportFormat }>(
-      "export_flow_as_code",
-      {
-        request: {
-          flow_id: flowId,
-          format,
-        },
-      },
-    );
-    return response.code;
+  async getFlowMonitorDebugInfo(): Promise<{
+    enabled: boolean;
+    active_flow_count: number;
+    memory_flow_count: number;
+    max_memory_flows: number;
+    memory_flow_ids: string[];
+    config_enabled: boolean;
+  }> {
+    return invoke("get_flow_monitor_debug_info");
+  },
+
+  /**
+   * 创建测试 Flow 数据（仅用于调试）
+   *
+   * @param count - 要创建的测试 Flow 数量
+   * @returns 成功创建的 Flow 数量
+   */
+  async createTestFlows(count?: number): Promise<number> {
+    return invoke("create_test_flows", { count });
   },
 };
 

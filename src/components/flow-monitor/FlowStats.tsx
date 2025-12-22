@@ -77,12 +77,17 @@ export function FlowStats({
       setLoading(true);
       setError(null);
 
+      console.log("正在获取统计数据，过滤条件:", filter);
+
       const [basicStats, enhanced] = await Promise.all([
         flowMonitorApi.getFlowStats(filter),
         showEnhanced
           ? enhancedStatsApi.getEnhancedStats(filter, getTimeRange())
           : Promise.resolve(null),
       ]);
+
+      console.log("获取到的基础统计数据:", basicStats);
+      console.log("获取到的增强统计数据:", enhanced);
 
       setStats(basicStats);
       setEnhancedStats(enhanced);
@@ -161,6 +166,30 @@ export function FlowStats({
           统计仪表板
         </h2>
         <div className="flex items-center gap-2">
+          {/* 调试按钮 */}
+          <button
+            onClick={async () => {
+              try {
+                const debugInfo =
+                  await flowMonitorApi.getFlowMonitorDebugInfo();
+                console.log("Flow Monitor 调试信息:", debugInfo);
+
+                if (debugInfo.memory_flow_count === 0) {
+                  console.log("内存中没有 Flow 数据，创建测试数据...");
+                  const created = await flowMonitorApi.createTestFlows(5);
+                  console.log(`已创建 ${created} 个测试 Flow`);
+                  // 重新获取统计数据
+                  fetchStats();
+                }
+              } catch (e) {
+                console.error("调试失败:", e);
+              }
+            }}
+            className="px-2 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600"
+          >
+            调试
+          </button>
+
           {/* 时间范围选择 */}
           <select
             value={timeRangeHours}

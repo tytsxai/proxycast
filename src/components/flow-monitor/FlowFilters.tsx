@@ -316,14 +316,25 @@ export function FlowFilters({ filter, onChange }: FlowFiltersProps) {
       {/* 表达式模式 */}
       {filterMode === "expression" ? (
         <div className="space-y-3">
-          <FilterExpressionInput
-            value={expressionValue}
-            onChange={setExpressionValue}
-            onSubmit={handleExpressionSubmit}
-            onValidationChange={handleExpressionValidation}
-            showHelp={showHelp}
-            onHelpToggle={() => setShowHelp(!showHelp)}
-          />
+          <div className="flex gap-2">
+            <div className="flex-1">
+              <FilterExpressionInput
+                value={expressionValue}
+                onChange={setExpressionValue}
+                onSubmit={handleExpressionSubmit}
+                onValidationChange={handleExpressionValidation}
+                showHelp={showHelp}
+                onHelpToggle={() => setShowHelp(!showHelp)}
+              />
+            </div>
+            <button
+              onClick={() => handleExpressionSubmit(expressionValue)}
+              disabled={!expressionValid || !expressionValue.trim()}
+              className="rounded-lg border px-4 py-2 text-sm hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              搜索
+            </button>
+          </div>
 
           {/* 帮助面板 */}
           {showHelp && (

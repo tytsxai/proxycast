@@ -206,13 +206,26 @@ impl FlowFilter {
             }
         }
 
-        // 内容搜索
+        // 内容搜索（搜索响应内容、模型名称、提供商名称）
         if let Some(ref search) = self.content_search {
+            let search_lower = search.to_lowercase();
+
+            // 搜索响应内容
             let content = flow
                 .response
                 .as_ref()
                 .map_or(String::new(), |r| r.content.clone());
-            if !content.to_lowercase().contains(&search.to_lowercase()) {
+            let content_matches = content.to_lowercase().contains(&search_lower);
+
+            // 搜索模型名称
+            let model_matches = flow.request.model.to_lowercase().contains(&search_lower);
+
+            // 搜索提供商名称
+            let provider_name = format!("{:?}", flow.metadata.provider).to_lowercase();
+            let provider_matches = provider_name.contains(&search_lower);
+
+            // 任一匹配即可
+            if !content_matches && !model_matches && !provider_matches {
                 return false;
             }
         }

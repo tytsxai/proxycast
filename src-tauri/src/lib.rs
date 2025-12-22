@@ -1904,6 +1904,8 @@ pub fn run() {
             commands::flow_monitor_cmd::cleanup_flows,
             commands::flow_monitor_cmd::get_recent_flows,
             commands::flow_monitor_cmd::get_flow_monitor_status,
+            commands::flow_monitor_cmd::get_flow_monitor_debug_info,
+            commands::flow_monitor_cmd::create_test_flows,
             commands::flow_monitor_cmd::enable_flow_monitor,
             commands::flow_monitor_cmd::disable_flow_monitor,
             commands::flow_monitor_cmd::subscribe_flow_events,
@@ -1997,6 +1999,17 @@ pub fn run() {
             commands::flow_monitor_cmd::batch_export_flows,
             commands::flow_monitor_cmd::batch_delete_flows,
             commands::flow_monitor_cmd::batch_add_to_session,
+            // Window control commands
+            commands::window_cmd::get_window_size,
+            commands::window_cmd::set_window_size,
+            commands::window_cmd::resize_for_flow_monitor,
+            commands::window_cmd::restore_window_size,
+            commands::window_cmd::toggle_window_size,
+            commands::window_cmd::center_window,
+            commands::window_cmd::get_window_size_options,
+            commands::window_cmd::set_window_size_by_option,
+            commands::window_cmd::toggle_fullscreen,
+            commands::window_cmd::is_fullscreen,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
