@@ -329,6 +329,9 @@ impl ProviderPoolService {
         match result {
             Ok(_) => {
                 self.mark_healthy(db, uuid, Some(&check_model))?;
+                // 你的使用场景里，“点击测试/健康检查通过”也希望计入成功次数（usage_count）。
+                // 这里复用 record_usage 的逻辑，保证前端能看到使用次数+1、last_used 更新。
+                let _ = self.record_usage(db, uuid);
                 Ok(HealthCheckResult {
                     uuid: uuid.to_string(),
                     success: true,
@@ -365,6 +368,7 @@ impl ProviderPoolService {
                             match retry_result {
                                 Ok(_) => {
                                     self.mark_healthy(db, uuid, Some(&check_model))?;
+                                    let _ = self.record_usage(db, uuid);
                                     return Ok(HealthCheckResult {
                                         uuid: uuid.to_string(),
                                         success: true,

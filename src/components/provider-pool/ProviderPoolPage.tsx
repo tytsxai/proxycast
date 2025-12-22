@@ -200,8 +200,11 @@ export const ProviderPoolPage = forwardRef<ProviderPoolPageRef>(
         const result = await checkCredentialHealth(uuid);
         if (result.success) {
           showSuccess("健康检查通过！", uuid);
+          // 立即刷新：后端会在健康检查成功时更新 usage_count/last_used
+          refresh();
         } else {
           showError(result.message || "健康检查未通过", "health_check", uuid);
+          refresh();
         }
       } catch (e) {
         showError(
@@ -209,14 +212,17 @@ export const ProviderPoolPage = forwardRef<ProviderPoolPageRef>(
           "health_check",
           uuid,
         );
+        refresh();
       }
     };
 
     const handleCheckTypeHealth = async (providerType: PoolProviderType) => {
       try {
         await checkTypeHealth(providerType);
+        refresh();
       } catch (e) {
         showError(e instanceof Error ? e.message : String(e), "health_check");
+        refresh();
       }
     };
 
