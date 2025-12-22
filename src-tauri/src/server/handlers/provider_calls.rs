@@ -30,7 +30,8 @@ use crate::models::anthropic::AnthropicMessagesRequest;
 use crate::models::openai::ChatCompletionRequest;
 use crate::models::provider_pool_model::{CredentialData, ProviderCredential};
 use crate::providers::{
-    AntigravityProvider, ClaudeCustomProvider, KiroProvider, OpenAICustomProvider, VertexProvider,
+    AntigravityProvider, ClaudeCustomProvider, ClaudeOAuthProvider, CodexProvider, IFlowProvider,
+    KiroProvider, OpenAICustomProvider, VertexProvider,
 };
 use crate::server::AppState;
 use crate::server_utils::{
@@ -42,6 +43,286 @@ use crate::streaming::{
     StreamResponse,
 };
 use futures::StreamExt;
+
+// ============================================================================
+// OpenAI <-> Anthropic/Codex 辅助转换
+// ============================================================================
+
+fn build_anthropic_body_from_openai(request: &ChatCompletionRequest) -> serde_json::Value {
+    let mut messages: Vec<serde_json::Value> = Vec::new();
+    let mut system_parts: Vec<String> = Vec::new();
+    let mut pending_tool_results: Vec<serde_json::Value> = Vec::new();
+
+    for msg in &request.messages {
+        match msg.role.as_str() {
+            "system" => {
+                let content = msg.get_content_text();
+                if !content.is_empty() {
+                    system_parts.push(content);
+                }
+            }
+            "tool" => {
+                let tool_use_id = msg.tool_call_id.clone().unwrap_or_default();
+                if tool_use_id.is_empty() {
+                    continue;
+                }
+                let content = msg.get_content_text();
+                pending_tool_results.push(serde_json::json!({
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": content
+                }));
+            }
+            "assistant" | "user" => {
+                let mut content_blocks: Vec<serde_json::Value> = Vec::new();
+
+                if msg.role == "user" && !pending_tool_results.is_empty() {
+                    content_blocks.extend(pending_tool_results.drain(..));
+                }
+
+                let content = msg.get_content_text();
+                if !content.is_empty() {
+                    content_blocks.push(serde_json::json!({
+                        "type": "text",
+                        "text": content
+                    }));
+                }
+
+                if msg.role == "assistant" {
+                    if let Some(tool_calls) = &msg.tool_calls {
+                        for tc in tool_calls {
+                            let input = serde_json::from_str(&tc.function.arguments)
+                                .unwrap_or_else(|_| serde_json::json!({}));
+                            content_blocks.push(serde_json::json!({
+                                "type": "tool_use",
+                                "id": tc.id.clone(),
+                                "name": tc.function.name.clone(),
+                                "input": input
+                            }));
+                        }
+                    }
+                }
+
+                if !content_blocks.is_empty() {
+                    messages.push(serde_json::json!({
+                        "role": msg.role.clone(),
+                        "content": content_blocks
+                    }));
+                }
+            }
+            _ => {
+                let content = msg.get_content_text();
+                if !content.is_empty() {
+                    messages.push(serde_json::json!({
+                        "role": "user",
+                        "content": [{
+                            "type": "text",
+                            "text": content
+                        }]
+                    }));
+                }
+            }
+        }
+    }
+
+    if !pending_tool_results.is_empty() {
+        messages.push(serde_json::json!({
+            "role": "user",
+            "content": pending_tool_results
+        }));
+    }
+
+    let mut body = serde_json::json!({
+        "model": request.model.clone(),
+        "max_tokens": request.max_tokens.unwrap_or(4096),
+        "messages": messages,
+        "stream": request.stream
+    });
+
+    if !system_parts.is_empty() {
+        body["system"] = serde_json::json!(system_parts.join("\n"));
+    }
+
+    if let Some(temp) = request.temperature {
+        body["temperature"] = serde_json::json!(temp);
+    }
+
+    if let Some(tools) = &request.tools {
+        let mapped = tools
+            .iter()
+            .map(|tool| {
+                serde_json::json!({
+                    "name": tool.function.name.clone(),
+                    "description": tool.function.description.clone(),
+                    "input_schema": tool.function.parameters.clone()
+                })
+            })
+            .collect::<Vec<_>>();
+        body["tools"] = serde_json::json!(mapped);
+    }
+
+    if let Some(tool_choice) = &request.tool_choice {
+        body["tool_choice"] = tool_choice.clone();
+    }
+
+    body
+}
+
+fn convert_anthropic_response_to_openai(
+    response: &serde_json::Value,
+    fallback_model: &str,
+) -> serde_json::Value {
+    let mut content = String::new();
+    let mut tool_calls: Vec<serde_json::Value> = Vec::new();
+
+    if let Some(content_value) = response.get("content") {
+        if let Some(parts) = content_value.as_array() {
+            for part in parts {
+                match part.get("type").and_then(|v| v.as_str()) {
+                    Some("text") => {
+                        if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+                            content.push_str(text);
+                        }
+                    }
+                    Some("tool_use") => {
+                        let id = part
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| format!("call_{}", uuid::Uuid::new_v4()));
+                        let name = part.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
+                        let input = part.get("input").cloned().unwrap_or(serde_json::json!({}));
+                        tool_calls.push(serde_json::json!({
+                            "id": id,
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "arguments": serde_json::to_string(&input).unwrap_or_default()
+                            }
+                        }));
+                    }
+                    _ => {}
+                }
+            }
+        } else if let Some(text) = content_value.as_str() {
+            content = text.to_string();
+        }
+    }
+
+    let finish_reason = match response.get("stop_reason").and_then(|v| v.as_str()) {
+        Some("tool_use") => "tool_calls",
+        Some("max_tokens") => "length",
+        Some("end_turn") | Some("stop_sequence") => "stop",
+        Some(_) => "stop",
+        None => {
+            if tool_calls.is_empty() {
+                "stop"
+            } else {
+                "tool_calls"
+            }
+        }
+    };
+
+    let mut message = serde_json::json!({
+        "role": "assistant",
+        "content": if content.is_empty() { serde_json::Value::Null } else { serde_json::json!(content) }
+    });
+
+    if !tool_calls.is_empty() {
+        message["tool_calls"] = serde_json::json!(tool_calls);
+    }
+
+    let input_tokens = response["usage"]["input_tokens"].as_u64().unwrap_or(0);
+    let output_tokens = response["usage"]["output_tokens"].as_u64().unwrap_or(0);
+    let total_tokens = response["usage"]["total_tokens"]
+        .as_u64()
+        .unwrap_or(input_tokens + output_tokens);
+
+    serde_json::json!({
+        "id": response.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()).unwrap_or_else(|| format!("chatcmpl-{}", uuid::Uuid::new_v4())),
+        "object": "chat.completion",
+        "created": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        "model": response.get("model").and_then(|v| v.as_str()).unwrap_or(fallback_model),
+        "choices": [{
+            "index": 0,
+            "message": message,
+            "finish_reason": finish_reason
+        }],
+        "usage": {
+            "prompt_tokens": input_tokens,
+            "completion_tokens": output_tokens,
+            "total_tokens": total_tokens
+        }
+    })
+}
+
+fn extract_codex_output_text(response: &serde_json::Value) -> String {
+    if let Some(text) = response.get("output_text").and_then(|v| v.as_str()) {
+        return text.to_string();
+    }
+
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(outputs) = response.get("output").and_then(|v| v.as_array()) {
+        for output in outputs {
+            if let Some(content_blocks) = output.get("content").and_then(|v| v.as_array()) {
+                for block in content_blocks {
+                    let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    if block_type == "output_text" || block_type == "text" {
+                        if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                            parts.push(text.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    parts.join("")
+}
+
+fn convert_codex_response_to_openai(
+    response: &serde_json::Value,
+    fallback_model: &str,
+) -> serde_json::Value {
+    if response.get("choices").and_then(|v| v.as_array()).is_some() {
+        return response.clone();
+    }
+
+    let content = extract_codex_output_text(response);
+    let message = serde_json::json!({
+        "role": "assistant",
+        "content": if content.is_empty() { serde_json::Value::Null } else { serde_json::json!(content) }
+    });
+
+    let input_tokens = response["usage"]["input_tokens"].as_u64().unwrap_or(0);
+    let output_tokens = response["usage"]["output_tokens"].as_u64().unwrap_or(0);
+    let total_tokens = response["usage"]["total_tokens"]
+        .as_u64()
+        .unwrap_or(input_tokens + output_tokens);
+
+    serde_json::json!({
+        "id": response.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()).unwrap_or_else(|| format!("chatcmpl-{}", uuid::Uuid::new_v4())),
+        "object": "chat.completion",
+        "created": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        "model": response.get("model").and_then(|v| v.as_str()).unwrap_or(fallback_model),
+        "choices": [{
+            "index": 0,
+            "message": message,
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": input_tokens,
+            "completion_tokens": output_tokens,
+            "total_tokens": total_tokens
+        }
+    })
+}
 
 /// 根据凭证调用 Provider (Anthropic 格式)
 ///
@@ -948,22 +1229,446 @@ pub async fn call_provider_openai(
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": {"message": e.to_string()}}))).into_response(),
             }
         }
+        CredentialData::CodexOAuth { creds_file_path, api_base_url } => {
+            let mut codex = CodexProvider::new();
+            if let Err(e) = codex.load_credentials_from_path(creds_file_path).await {
+                if let Some(db) = &state.db {
+                    let _ = state.pool_service.mark_unhealthy(
+                        db,
+                        &credential.uuid,
+                        Some(&format!("Failed to load Codex credentials: {}", e)),
+                    );
+                }
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": {"message": format!("Failed to load Codex credentials: {}", e)}})),
+                )
+                    .into_response();
+            }
+            if let Some(base_url) = api_base_url
+                .as_deref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+            {
+                codex.credentials.api_base_url = Some(base_url.to_string());
+            }
+            if let Err(e) = codex.ensure_valid_token().await {
+                if let Some(db) = &state.db {
+                    let _ = state.pool_service.mark_unhealthy(
+                        db,
+                        &credential.uuid,
+                        Some(&format!("Token refresh failed: {}", e)),
+                    );
+                }
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({"error": {"message": format!("Token refresh failed: {}", e)}})),
+                )
+                    .into_response();
+            }
+            let request_json = serde_json::to_value(request).unwrap_or_default();
+            match codex.call_api(&request_json).await {
+                Ok(resp) => {
+                    if resp.status().is_success() {
+                        match resp.text().await {
+                            Ok(body) => {
+                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                                    if let Some(db) = &state.db {
+                                        let _ = state.pool_service.mark_healthy(
+                                            db,
+                                            &credential.uuid,
+                                            Some(&request.model),
+                                        );
+                                        let _ = state.pool_service.record_usage(db, &credential.uuid);
+                                    }
+                                    let converted = convert_codex_response_to_openai(&json, &request.model);
+                                    Json(converted).into_response()
+                                } else {
+                                    if let Some(db) = &state.db {
+                                        let _ = state.pool_service.mark_unhealthy(
+                                            db,
+                                            &credential.uuid,
+                                            Some("Invalid JSON response"),
+                                        );
+                                    }
+                                    (
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        Json(serde_json::json!({"error": {"message": "Invalid JSON response"}})),
+                                    )
+                                        .into_response()
+                                }
+                            }
+                            Err(e) => {
+                                if let Some(db) = &state.db {
+                                    let _ = state.pool_service.mark_unhealthy(
+                                        db,
+                                        &credential.uuid,
+                                        Some(&e.to_string()),
+                                    );
+                                }
+                                (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    Json(serde_json::json!({"error": {"message": e.to_string()}})),
+                                )
+                                    .into_response()
+                            }
+                        }
+                    } else {
+                        let status = resp.status();
+                        let body = resp.text().await.unwrap_or_default();
+                        if let Some(db) = &state.db {
+                            let _ = state.pool_service.mark_unhealthy(
+                                db,
+                                &credential.uuid,
+                                Some(&format!(
+                                    "HTTP {}: {}",
+                                    status,
+                                    safe_truncate(&body, 100)
+                                )),
+                            );
+                        }
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(serde_json::json!({"error": {"message": body}})),
+                        )
+                            .into_response()
+                    }
+                }
+                Err(e) => {
+                    if let Some(db) = &state.db {
+                        let _ = state.pool_service.mark_unhealthy(
+                            db,
+                            &credential.uuid,
+                            Some(&e.to_string()),
+                        );
+                    }
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": {"message": e.to_string()}})),
+                    )
+                        .into_response()
+                }
+            }
+        }
+        CredentialData::ClaudeOAuth { creds_file_path } => {
+            let token = if let Some(db) = &state.db {
+                match state.token_cache.get_valid_token(db, &credential.uuid).await {
+                    Ok(t) => t,
+                    Err(_) => {
+                        let mut provider = ClaudeOAuthProvider::new();
+                        if let Err(load_err) =
+                            provider.load_credentials_from_path(creds_file_path).await
+                        {
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(serde_json::json!({"error": {"message": format!("Failed to load Claude OAuth credentials: {}", load_err)}})),
+                            )
+                                .into_response();
+                        }
+                        match provider.ensure_valid_token().await {
+                            Ok(t) => t,
+                            Err(err) => {
+                                return (
+                                    StatusCode::UNAUTHORIZED,
+                                    Json(serde_json::json!({"error": {"message": format!("Token refresh failed: {}", err)}})),
+                                )
+                                    .into_response();
+                            }
+                        }
+                    }
+                }
+            } else {
+                let mut provider = ClaudeOAuthProvider::new();
+                if let Err(e) = provider.load_credentials_from_path(creds_file_path).await {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": {"message": format!("Failed to load Claude OAuth credentials: {}", e)}})),
+                    )
+                        .into_response();
+                }
+                match provider.ensure_valid_token().await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        return (
+                            StatusCode::UNAUTHORIZED,
+                            Json(serde_json::json!({"error": {"message": format!("Token refresh failed: {}", e)}})),
+                        )
+                            .into_response();
+                    }
+                }
+            };
+
+            let request_body = build_anthropic_body_from_openai(request);
+            let client = reqwest::Client::new();
+            let resp = client
+                .post("https://api.anthropic.com/v1/messages")
+                .bearer_auth(&token)
+                .header("anthropic-version", "2023-06-01")
+                .header("Content-Type", "application/json")
+                .header(
+                    "Accept",
+                    if request.stream {
+                        "text/event-stream"
+                    } else {
+                        "application/json"
+                    },
+                )
+                .json(&request_body)
+                .send()
+                .await;
+
+            match resp {
+                Ok(resp) => {
+                    let status = resp.status();
+
+                    // 流式：将 Anthropic SSE 转换为 OpenAI SSE
+                    if request.stream {
+                        if !status.is_success() {
+                            let body = resp.text().await.unwrap_or_default();
+                            if let Some(db) = &state.db {
+                                let _ = state.pool_service.mark_unhealthy(
+                                    db,
+                                    &credential.uuid,
+                                    Some(&format!(
+                                        "HTTP {}: {}",
+                                        status,
+                                        safe_truncate(&body, 100)
+                                    )),
+                                );
+                            }
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(serde_json::json!({"error": {"message": body}})),
+                            )
+                                .into_response();
+                        }
+
+                        if let Some(db) = &state.db {
+                            let _ = state.pool_service.mark_healthy(
+                                db,
+                                &credential.uuid,
+                                Some(&request.model),
+                            );
+                            let _ = state.pool_service.record_usage(db, &credential.uuid);
+                        }
+
+                        return handle_streaming_response_with_timeout(
+                            state,
+                            flow_id,
+                            response_to_stream(resp),
+                            StreamingFormat::AnthropicSse,
+                            StreamingFormat::OpenAiSse,
+                            &request.model,
+                            300_000,
+                        )
+                        .await;
+                    }
+
+                    // 非流式：解析 JSON 并转换为 OpenAI chat.completion
+                    if status.is_success() {
+                        match resp.json::<serde_json::Value>().await {
+                            Ok(json) => {
+                                if let Some(db) = &state.db {
+                                    let _ = state.pool_service.mark_healthy(
+                                        db,
+                                        &credential.uuid,
+                                        Some(&request.model),
+                                    );
+                                    let _ = state.pool_service.record_usage(db, &credential.uuid);
+                                }
+                                let converted =
+                                    convert_anthropic_response_to_openai(&json, &request.model);
+                                Json(converted).into_response()
+                            }
+                            Err(e) => {
+                                if let Some(db) = &state.db {
+                                    let _ = state.pool_service.mark_unhealthy(
+                                        db,
+                                        &credential.uuid,
+                                        Some(&e.to_string()),
+                                    );
+                                }
+                                (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    Json(serde_json::json!({"error": {"message": format!("Invalid JSON response: {}", e)}})),
+                                )
+                                    .into_response()
+                            }
+                        }
+                    } else {
+                        let body = resp.text().await.unwrap_or_default();
+                        if let Some(db) = &state.db {
+                            let _ = state.pool_service.mark_unhealthy(
+                                db,
+                                &credential.uuid,
+                                Some(&format!(
+                                    "HTTP {}: {}",
+                                    status,
+                                    safe_truncate(&body, 100)
+                                )),
+                            );
+                        }
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(serde_json::json!({"error": {"message": body}})),
+                        )
+                            .into_response()
+                    }
+                }
+                Err(e) => {
+                    if let Some(db) = &state.db {
+                        let _ = state.pool_service.mark_unhealthy(
+                            db,
+                            &credential.uuid,
+                            Some(&e.to_string()),
+                        );
+                    }
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": {"message": e.to_string()}})),
+                    )
+                        .into_response()
+                }
+            }
+        }
+        CredentialData::IFlowOAuth { creds_file_path }
+        | CredentialData::IFlowCookie { creds_file_path } => {
+            let mut iflow = IFlowProvider::new();
+            if let Err(e) = iflow.load_credentials_from_path(creds_file_path).await {
+                if let Some(db) = &state.db {
+                    let _ = state.pool_service.mark_unhealthy(
+                        db,
+                        &credential.uuid,
+                        Some(&format!("Failed to load iFlow credentials: {}", e)),
+                    );
+                }
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": {"message": format!("Failed to load iFlow credentials: {}", e)}})),
+                )
+                    .into_response();
+            }
+
+            if iflow.credentials.auth_type == "oauth" {
+                if let Err(e) = iflow.ensure_valid_token().await {
+                    if let Some(db) = &state.db {
+                        let _ = state.pool_service.mark_unhealthy(
+                            db,
+                            &credential.uuid,
+                            Some(&format!("Token refresh failed: {}", e)),
+                        );
+                    }
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(serde_json::json!({"error": {"message": format!("Token refresh failed: {}", e)}})),
+                    )
+                        .into_response();
+                }
+            } else if iflow.credentials.auth_type == "cookie" && iflow.should_refresh_api_key() {
+                if let Err(e) = iflow.refresh_api_key_with_cookie().await {
+                    if let Some(db) = &state.db {
+                        let _ = state.pool_service.mark_unhealthy(
+                            db,
+                            &credential.uuid,
+                            Some(&format!("API key refresh failed: {}", e)),
+                        );
+                    }
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(serde_json::json!({"error": {"message": format!("API key refresh failed: {}", e)}})),
+                    )
+                        .into_response();
+                }
+            }
+
+            let request_json = serde_json::to_value(request).unwrap_or_default();
+            match iflow.call_api(&request_json).await {
+                Ok(resp) => {
+                    if resp.status().is_success() {
+                        match resp.text().await {
+                            Ok(body) => {
+                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                                    if let Some(db) = &state.db {
+                                        let _ = state.pool_service.mark_healthy(
+                                            db,
+                                            &credential.uuid,
+                                            Some(&request.model),
+                                        );
+                                        let _ = state.pool_service.record_usage(db, &credential.uuid);
+                                    }
+                                    Json(json).into_response()
+                                } else {
+                                    if let Some(db) = &state.db {
+                                        let _ = state.pool_service.mark_unhealthy(
+                                            db,
+                                            &credential.uuid,
+                                            Some("Invalid JSON response"),
+                                        );
+                                    }
+                                    (
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        Json(serde_json::json!({"error": {"message": "Invalid JSON response"}})),
+                                    )
+                                        .into_response()
+                                }
+                            }
+                            Err(e) => {
+                                if let Some(db) = &state.db {
+                                    let _ = state.pool_service.mark_unhealthy(
+                                        db,
+                                        &credential.uuid,
+                                        Some(&e.to_string()),
+                                    );
+                                }
+                                (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    Json(serde_json::json!({"error": {"message": e.to_string()}})),
+                                )
+                                    .into_response()
+                            }
+                        }
+                    } else {
+                        let status = resp.status();
+                        let body = resp.text().await.unwrap_or_default();
+                        if let Some(db) = &state.db {
+                            let _ = state.pool_service.mark_unhealthy(
+                                db,
+                                &credential.uuid,
+                                Some(&format!(
+                                    "HTTP {}: {}",
+                                    status,
+                                    safe_truncate(&body, 100)
+                                )),
+                            );
+                        }
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(serde_json::json!({"error": {"message": body}})),
+                        )
+                            .into_response()
+                    }
+                }
+                Err(e) => {
+                    if let Some(db) = &state.db {
+                        let _ = state.pool_service.mark_unhealthy(
+                            db,
+                            &credential.uuid,
+                            Some(&e.to_string()),
+                        );
+                    }
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": {"message": e.to_string()}})),
+                    )
+                        .into_response()
+                }
+            }
+        }
         // Gemini API Key credentials - not supported for OpenAI format yet
         CredentialData::GeminiApiKey { .. } => {
             (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": {"message": "Gemini API Key credentials do not support OpenAI format yet"}})),
-            )
-                .into_response()
-        }
-        // 新增的凭证类型暂不支持 OpenAI 格式
-        CredentialData::CodexOAuth { .. }
-        | CredentialData::ClaudeOAuth { .. }
-        | CredentialData::IFlowOAuth { .. }
-        | CredentialData::IFlowCookie { .. } => {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": {"message": "This credential type does not support OpenAI format yet"}})),
             )
                 .into_response()
         }
@@ -993,6 +1698,7 @@ pub fn get_stream_format_for_credential(credential: &ProviderCredential) -> Stre
         CredentialData::GeminiOAuth { .. } => StreamingFormat::OpenAiSse,
         CredentialData::GeminiApiKey { .. } => StreamingFormat::OpenAiSse,
         CredentialData::VertexKey { .. } => StreamingFormat::OpenAiSse,
+        CredentialData::ClaudeOAuth { .. } => StreamingFormat::AnthropicSse,
         _ => StreamingFormat::OpenAiSse,
     }
 }
