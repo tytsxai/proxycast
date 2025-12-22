@@ -17,6 +17,7 @@ use tokio::sync::mpsc;
 
 /// 热重载错误类型
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum HotReloadError {
     /// 文件监控错误
     WatchError(String),
@@ -46,6 +47,7 @@ impl std::error::Error for HotReloadError {}
 
 /// 热重载结果
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum ReloadResult {
     /// 重载成功
     Success {

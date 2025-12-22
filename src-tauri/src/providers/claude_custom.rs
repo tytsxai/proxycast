@@ -319,3 +319,127 @@ impl ClaudeCustomProvider {
         Ok(data)
     }
 }
+
+// ============================================================================
+// StreamingProvider Trait 实现
+// ============================================================================
+
+use crate::providers::ProviderError;
+use crate::streaming::traits::{
+    reqwest_stream_to_stream_response, StreamFormat, StreamResponse, StreamingProvider,
+};
+use async_trait::async_trait;
+
+#[async_trait]
+impl StreamingProvider for ClaudeCustomProvider {
+    /// 发起流式 API 调用
+    ///
+    /// 使用 reqwest 的 bytes_stream 返回字节流，支持真正的端到端流式传输。
+    /// Claude 使用 Anthropic SSE 格式。
+    ///
+    /// # 需求覆盖
+    /// - 需求 1.2: ClaudeCustomProvider 流式支持
+    async fn call_api_stream(
+        &self,
+        request: &ChatCompletionRequest,
+    ) -> Result<StreamResponse, ProviderError> {
+        let api_key = self.config.api_key.as_ref().ok_or_else(|| {
+            ProviderError::ConfigurationError("Claude API key not configured".to_string())
+        })?;
+
+        // 转换 OpenAI 请求为 Anthropic 格式
+        let mut anthropic_messages = Vec::new();
+        let mut system_content = None;
+
+        for msg in &request.messages {
+            let role = &msg.role;
+
+            // 提取消息内容
+            let content = match &msg.content {
+                Some(MessageContent::Text(text)) => text.clone(),
+                Some(MessageContent::Parts(parts)) => parts
+                    .iter()
+                    .filter_map(|p| {
+                        if let ContentPart::Text { text } = p {
+                            Some(text.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(""),
+                None => String::new(),
+            };
+
+            if role == "system" {
+                system_content = Some(content);
+            } else {
+                let anthropic_role = if role == "assistant" {
+                    "assistant"
+                } else {
+                    "user"
+                };
+                anthropic_messages.push(serde_json::json!({
+                    "role": anthropic_role,
+                    "content": content
+                }));
+            }
+        }
+
+        let mut anthropic_body = serde_json::json!({
+            "model": request.model,
+            "max_tokens": request.max_tokens.unwrap_or(4096),
+            "messages": anthropic_messages,
+            "stream": true
+        });
+
+        if let Some(sys) = system_content {
+            anthropic_body["system"] = serde_json::json!(sys);
+        }
+
+        let url = self.build_url("messages");
+
+        tracing::info!(
+            "[CLAUDE_STREAM] 发起流式请求: url={} model={}",
+            url,
+            request.model
+        );
+
+        let resp = self
+            .client
+            .post(&url)
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("Content-Type", "application/json")
+            .header("Accept", "text/event-stream")
+            .json(&anthropic_body)
+            .send()
+            .await
+            .map_err(|e| ProviderError::from_reqwest_error(&e))?;
+
+        // 检查响应状态
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            tracing::error!("[CLAUDE_STREAM] 请求失败: {} - {}", status, body);
+            return Err(ProviderError::from_http_status(status.as_u16(), &body));
+        }
+
+        tracing::info!("[CLAUDE_STREAM] 流式响应开始: status={}", status);
+
+        // 将 reqwest 响应转换为 StreamResponse
+        Ok(reqwest_stream_to_stream_response(resp))
+    }
+
+    fn supports_streaming(&self) -> bool {
+        self.is_configured()
+    }
+
+    fn provider_name(&self) -> &'static str {
+        "ClaudeCustomProvider"
+    }
+
+    fn stream_format(&self) -> StreamFormat {
+        StreamFormat::AnthropicSse
+    }
+}

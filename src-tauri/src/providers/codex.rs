@@ -608,7 +608,7 @@ impl CodexProvider {
             ("codex_cli_simplified_flow", "true"),
         ];
 
-        let query = serde_urlencoded::to_string(&params)?;
+        let query = serde_urlencoded::to_string(params)?;
         Ok(format!("{}?{}", OPENAI_AUTH_URL, query))
     }
 
@@ -1294,11 +1294,9 @@ fn transform_to_codex_format(
                     } else if let Some(arr) = content.as_array() {
                         arr.iter()
                             .filter_map(|part| {
-                                if let Some(text) = part["text"].as_str() {
-                                    Some(serde_json::json!({"type": "input_text", "text": text}))
-                                } else {
-                                    None
-                                }
+                                part["text"].as_str().map(
+                                    |text| serde_json::json!({"type": "input_text", "text": text}),
+                                )
                             })
                             .collect()
                     } else {
@@ -1330,14 +1328,14 @@ fn transform_to_codex_format(
     let tools = request["tools"].as_array().map(|tools| {
         tools
             .iter()
-            .filter_map(|tool| {
+            .map(|tool| {
                 let func = &tool["function"];
-                Some(serde_json::json!({
+                serde_json::json!({
                     "type": "function",
                     "name": func["name"],
                     "description": func["description"],
                     "parameters": func["parameters"]
-                }))
+                })
             })
             .collect::<Vec<_>>()
     });
@@ -2155,8 +2153,7 @@ pub async fn start_codex_oauth_server_and_get_url() -> Result<
             // 等待回调结果
             match rx.await {
                 Ok(result) => result.map_err(|e| {
-                    Box::new(std::io::Error::new(std::io::ErrorKind::Other, e))
-                        as Box<dyn Error + Send + Sync>
+                    Box::new(std::io::Error::other(e)) as Box<dyn Error + Send + Sync>
                 }),
                 Err(_) => Err("OAuth 回调通道关闭".into()),
             }

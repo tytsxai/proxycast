@@ -150,7 +150,7 @@ async fn handle_socket(socket: WebSocket, state: WsHandlerState, client_info: Op
                         let response = handle_message(&state, &conn_id, ws_msg).await;
                         if let Some(resp) = response {
                             let resp_text = serde_json::to_string(&resp).unwrap_or_default();
-                            if sender.send(Message::Text(resp_text.into())).await.is_err() {
+                            if sender.send(Message::Text(resp_text)).await.is_err() {
                                 break;
                             }
                         }
@@ -162,7 +162,7 @@ async fn handle_socket(socket: WebSocket, state: WsHandlerState, client_info: Op
                             e
                         )));
                         let error_text = serde_json::to_string(&error).unwrap_or_default();
-                        if sender.send(Message::Text(error_text.into())).await.is_err() {
+                        if sender.send(Message::Text(error_text)).await.is_err() {
                             break;
                         }
                     }
@@ -174,7 +174,7 @@ async fn handle_socket(socket: WebSocket, state: WsHandlerState, client_info: Op
                 let error =
                     WsMessage::Error(WsError::invalid_message("Binary messages not supported"));
                 let error_text = serde_json::to_string(&error).unwrap_or_default();
-                if sender.send(Message::Text(error_text.into())).await.is_err() {
+                if sender.send(Message::Text(error_text)).await.is_err() {
                     break;
                 }
             }
@@ -245,6 +245,21 @@ async fn handle_message(
         WsMessage::Error(_) => {
             // 忽略客户端发送的错误消息
             None
+        }
+        WsMessage::SubscribeFlowEvents | WsMessage::UnsubscribeFlowEvents => {
+            // Flow 事件订阅在 server/handlers/websocket.rs 中处理
+            // 这里的 handler 是旧的实现，暂时返回不支持的错误
+            Some(WsMessage::Error(WsError::invalid_request(
+                None,
+                "Flow event subscription is not supported in this handler",
+            )))
+        }
+        WsMessage::FlowEvent(_) => {
+            // 客户端不应发送 FlowEvent 消息
+            Some(WsMessage::Error(WsError::invalid_request(
+                None,
+                "FlowEvent messages are server-to-client only",
+            )))
         }
     }
 }

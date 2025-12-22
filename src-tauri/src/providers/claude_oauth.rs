@@ -680,8 +680,7 @@ pub async fn start_claude_oauth_server_and_get_url() -> Result<
             // 等待回调结果
             match rx.await {
                 Ok(result) => result.map_err(|e| {
-                    Box::new(std::io::Error::new(std::io::ErrorKind::Other, e))
-                        as Box<dyn Error + Send + Sync>
+                    Box::new(std::io::Error::other(e)) as Box<dyn Error + Send + Sync>
                 }),
                 Err(_) => Err("OAuth 回调通道关闭".into()),
             }

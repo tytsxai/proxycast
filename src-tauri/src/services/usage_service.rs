@@ -204,6 +204,7 @@ pub fn build_request_headers(
 }
 
 /// 构造 User-Agent 字符串（用于测试）
+#[cfg(test)]
 pub fn build_user_agent(kiro_version: &str, machine_id: &str) -> String {
     let os_name = std::env::consts::OS;
     format!(
@@ -213,6 +214,7 @@ pub fn build_user_agent(kiro_version: &str, machine_id: &str) -> String {
 }
 
 /// 构造 x-amz-user-agent 字符串（用于测试）
+#[cfg(test)]
 pub fn build_x_amz_user_agent(kiro_version: &str, machine_id: &str) -> String {
     format!("aws-sdk-js/1.0.0 KiroIDE-{}-{}", kiro_version, machine_id)
 }

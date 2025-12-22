@@ -6,6 +6,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::flow_monitor::models::FlowError;
+use crate::flow_monitor::monitor::{
+    FlowEvent, FlowSummary, FlowUpdate, NotificationEvent, ThresholdCheckResult,
+};
+
 /// WebSocket 连接信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WsConnection {
@@ -69,6 +74,12 @@ pub enum WsMessage {
     Ping { timestamp: i64 },
     /// 心跳响应
     Pong { timestamp: i64 },
+    /// 订阅 Flow 事件
+    SubscribeFlowEvents,
+    /// 取消订阅 Flow 事件
+    UnsubscribeFlowEvents,
+    /// Flow 事件通知
+    FlowEvent(WsFlowEvent),
 }
 
 /// WebSocket API 请求
@@ -314,4 +325,47 @@ pub struct WsStatsSnapshot {
     pub active_connections: u64,
     pub total_messages: u64,
     pub total_errors: u64,
+}
+
+/// WebSocket Flow 事件
+///
+/// 用于通过 WebSocket 推送 Flow 监控事件
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "event_type", rename_all = "snake_case")]
+pub enum WsFlowEvent {
+    /// Flow 开始
+    FlowStarted { flow: FlowSummary },
+    /// Flow 更新
+    FlowUpdated { id: String, update: FlowUpdate },
+    /// Flow 完成
+    FlowCompleted { id: String, summary: FlowSummary },
+    /// Flow 失败
+    FlowFailed { id: String, error: FlowError },
+    /// 阈值警告
+    ThresholdWarning {
+        id: String,
+        result: ThresholdCheckResult,
+    },
+    /// 通知事件
+    Notification { notification: NotificationEvent },
+    /// 请求速率更新
+    RequestRateUpdate { rate: f64, count: usize },
+}
+
+impl From<FlowEvent> for WsFlowEvent {
+    fn from(event: FlowEvent) -> Self {
+        match event {
+            FlowEvent::FlowStarted { flow } => WsFlowEvent::FlowStarted { flow },
+            FlowEvent::FlowUpdated { id, update } => WsFlowEvent::FlowUpdated { id, update },
+            FlowEvent::FlowCompleted { id, summary } => WsFlowEvent::FlowCompleted { id, summary },
+            FlowEvent::FlowFailed { id, error } => WsFlowEvent::FlowFailed { id, error },
+            FlowEvent::ThresholdWarning { id, result } => {
+                WsFlowEvent::ThresholdWarning { id, result }
+            }
+            FlowEvent::Notification { notification } => WsFlowEvent::Notification { notification },
+            FlowEvent::RequestRateUpdate { rate, count } => {
+                WsFlowEvent::RequestRateUpdate { rate, count }
+            }
+        }
+    }
 }

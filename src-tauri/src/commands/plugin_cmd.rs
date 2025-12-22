@@ -1,8 +1,7 @@
 //! 插件系统相关命令
 
-use crate::plugin::{PluginConfig, PluginInfo, PluginManager, PluginStatus};
+use crate::plugin::{PluginConfig, PluginInfo, PluginManager};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 

@@ -9,9 +9,9 @@
 use super::state::{calculate_icon_status, CredentialHealth, TrayIconStatus, TrayStateSnapshot};
 use super::TrayManager;
 use std::sync::Arc;
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Runtime};
 use tokio::sync::RwLock;
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 
 /// 托盘状态同步器
 ///

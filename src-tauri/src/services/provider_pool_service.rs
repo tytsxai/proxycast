@@ -524,7 +524,7 @@ impl ProviderPoolService {
             format!("{} 服务暂时不可用。\n💡 解决方案：\n1. 这通常是服务提供方的临时问题\n2. 请稍后重试\n3. 如问题持续，可尝试其他凭证", provider_type)
         } else if error.contains("读取凭证文件失败") || error.contains("解析凭证失败")
         {
-            format!("凭证文件损坏或不可读。\n💡 解决方案：\n1. 凭证文件可能已损坏\n2. 建议删除此凭证后重新添加\n3. 确保文件权限正确且格式为有效的 JSON")
+            "凭证文件损坏或不可读。\n💡 解决方案：\n1. 凭证文件可能已损坏\n2. 建议删除此凭证后重新添加\n3. 确保文件权限正确且格式为有效的 JSON".to_string()
         } else {
             // 对于其他未识别的错误，提供通用建议
             format!("操作失败：{}\n💡 建议：\n1. 检查网络连接和凭证状态\n2. 尝试刷新 Token 或重新添加凭证\n3. 如问题持续，请联系技术支持", error)
@@ -1220,7 +1220,7 @@ impl ProviderPoolService {
         }
 
         // 为每个命名凭证创建路由
-        for (_provider_type, credentials) in &grouped {
+        for credentials in grouped.values() {
             for cred in credentials {
                 if let Some(name) = &cred.name {
                     if cred.is_available() {

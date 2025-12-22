@@ -5,7 +5,7 @@ use crate::config::{
 use crate::models::AppType;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tauri_plugin_autostart::ManagerExt;
 
 #[cfg(target_os = "windows")]
@@ -120,117 +120,62 @@ pub struct ToolVersion {
     pub installed: bool,
 }
 
+/// 检测工具版本的辅助函数
+fn check_tool_version(command: &str, args: &[&str]) -> Option<String> {
+    // 在 Windows 上，先尝试直接执行命令
+    let mut cmd = std::process::Command::new(command);
+    cmd.args(args);
+
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+
+    let output = cmd.output().ok();
+
+    // 如果直接执行失败，在 Windows 上尝试通过 PowerShell 执行
+    #[cfg(target_os = "windows")]
+    let output = output.or_else(|| {
+        std::process::Command::new("powershell")
+            .args(["-Command", &format!("{} {}", command, args.join(" "))])
+            .creation_flags(0x08000000)
+            .output()
+            .ok()
+    });
+
+    output
+        .and_then(|o| {
+            if o.status.success() {
+                // 先尝试 stdout，失败则尝试 stderr
+                String::from_utf8(o.stdout.clone())
+                    .or_else(|_| String::from_utf8(o.stderr))
+                    .ok()
+            } else {
+                None
+            }
+        })
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 #[tauri::command]
 pub async fn get_tool_versions() -> Result<Vec<ToolVersion>, String> {
     let mut versions = Vec::new();
 
-    // Check Claude Code version
-    #[cfg(target_os = "windows")]
-    let claude_version = std::process::Command::new("claude")
-        .arg("--version")
-        .creation_flags(0x08000000) // CREATE_NO_WINDOW
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                String::from_utf8(o.stdout).ok()
-            } else {
-                None
-            }
-        })
-        .map(|s| s.trim().to_string());
+    // 定义要检测的工具列表
+    let tools = vec![
+        ("Claude Code", "claude", vec!["--version"]),
+        ("Codex", "codex", vec!["--version"]),
+        ("Gemini CLI", "gemini", vec!["--version"]),
+    ];
 
-    #[cfg(not(target_os = "windows"))]
-    let claude_version = std::process::Command::new("claude")
-        .arg("--version")
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                String::from_utf8(o.stdout).ok()
-            } else {
-                None
-            }
-        })
-        .map(|s| s.trim().to_string());
+    for (name, command, args) in tools {
+        let version = check_tool_version(command, &args);
 
-    versions.push(ToolVersion {
-        name: "Claude Code".to_string(),
-        version: claude_version.clone(),
-        installed: claude_version.is_some(),
-    });
-
-    // Check Codex version
-    #[cfg(target_os = "windows")]
-    let codex_version = std::process::Command::new("codex")
-        .arg("--version")
-        .creation_flags(0x08000000) // CREATE_NO_WINDOW
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                String::from_utf8(o.stdout).ok()
-            } else {
-                None
-            }
-        })
-        .map(|s| s.trim().to_string());
-
-    #[cfg(not(target_os = "windows"))]
-    let codex_version = std::process::Command::new("codex")
-        .arg("--version")
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                String::from_utf8(o.stdout).ok()
-            } else {
-                None
-            }
-        })
-        .map(|s| s.trim().to_string());
-
-    versions.push(ToolVersion {
-        name: "Codex".to_string(),
-        version: codex_version.clone(),
-        installed: codex_version.is_some(),
-    });
-
-    // Check Gemini CLI version
-    #[cfg(target_os = "windows")]
-    let gemini_version = std::process::Command::new("gemini")
-        .arg("--version")
-        .creation_flags(0x08000000) // CREATE_NO_WINDOW
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                String::from_utf8(o.stdout).ok()
-            } else {
-                None
-            }
-        })
-        .map(|s| s.trim().to_string());
-
-    #[cfg(not(target_os = "windows"))]
-    let gemini_version = std::process::Command::new("gemini")
-        .arg("--version")
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                String::from_utf8(o.stdout).ok()
-            } else {
-                None
-            }
-        })
-        .map(|s| s.trim().to_string());
-
-    versions.push(ToolVersion {
-        name: "Gemini CLI".to_string(),
-        version: gemini_version.clone(),
-        installed: gemini_version.is_some(),
-    });
+        versions.push(ToolVersion {
+            name: name.to_string(),
+            version: version.clone(),
+            installed: version.is_some(),
+        });
+    }
 
     Ok(versions)
 }
@@ -739,4 +684,425 @@ fn version_compare(current: &str, latest: &str) -> bool {
     }
 
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_version_compare() {
+        // 测试版本比较逻辑
+        assert!(version_compare("0.14.0", "0.14.1"));
+        assert!(version_compare("0.14.0", "0.15.0"));
+        assert!(version_compare("0.14.0", "1.0.0"));
+        assert!(!version_compare("0.14.1", "0.14.0"));
+        assert!(!version_compare("0.14.0", "0.14.0"));
+        assert!(!version_compare("1.0.0", "0.14.0"));
+    }
+
+    #[test]
+    fn test_get_platform_patterns() {
+        let patterns = get_platform_patterns();
+
+        // 在支持的平台上应该返回非空的模式列表
+        #[cfg(any(
+            all(
+                target_os = "windows",
+                any(target_arch = "x86_64", target_arch = "aarch64")
+            ),
+            all(
+                target_os = "macos",
+                any(target_arch = "x86_64", target_arch = "aarch64")
+            ),
+            all(
+                target_os = "linux",
+                any(target_arch = "x86_64", target_arch = "aarch64")
+            )
+        ))]
+        {
+            assert!(!patterns.is_empty());
+        }
+
+        // 在不支持的平台上应该返回空列表
+        #[cfg(not(any(
+            all(
+                target_os = "windows",
+                any(target_arch = "x86_64", target_arch = "aarch64")
+            ),
+            all(
+                target_os = "macos",
+                any(target_arch = "x86_64", target_arch = "aarch64")
+            ),
+            all(
+                target_os = "linux",
+                any(target_arch = "x86_64", target_arch = "aarch64")
+            )
+        )))]
+        {
+            assert!(patterns.is_empty());
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DownloadResult {
+    pub success: bool,
+    pub message: String,
+    #[serde(rename = "filePath")]
+    pub file_path: Option<String>,
+}
+
+/// 下载更新安装包
+///
+/// 从 GitHub Releases 下载对应平台的安装包到下载目录
+#[tauri::command]
+pub async fn download_update(app_handle: AppHandle) -> Result<DownloadResult, String> {
+    // 首先检查是否有更新
+    let version_info = check_for_updates().await?;
+
+    if !version_info.has_update {
+        return Ok(DownloadResult {
+            success: false,
+            message: "当前已是最新版本".to_string(),
+            file_path: None,
+        });
+    }
+
+    let latest_version = version_info.latest.ok_or("无法获取最新版本信息")?;
+
+    // 从 GitHub API 获取实际的文件列表并匹配平台
+    let (filename, download_url) = get_platform_download_from_github(&latest_version).await?;
+
+    // 获取下载目录
+    let download_dir = get_download_directory(&app_handle)?;
+    let file_path = download_dir.join(&filename);
+
+    // 如果文件已存在，先删除
+    if file_path.exists() {
+        if let Err(e) = std::fs::remove_file(&file_path) {
+            tracing::warn!("删除旧文件失败: {}", e);
+        }
+    }
+
+    // 下载文件
+    let client = reqwest::Client::new();
+
+    match client
+        .get(&download_url)
+        .header("User-Agent", "ProxyCast")
+        .send()
+        .await
+    {
+        Ok(response) => {
+            if !response.status().is_success() {
+                return Ok(DownloadResult {
+                    success: false,
+                    message: format!("下载失败: HTTP {}", response.status()),
+                    file_path: None,
+                });
+            }
+
+            // 获取文件内容
+            match response.bytes().await {
+                Ok(bytes) => {
+                    // 写入文件
+                    match std::fs::write(&file_path, bytes) {
+                        Ok(_) => {
+                            tracing::info!("安装包下载成功: {:?}", file_path);
+
+                            // 尝试直接运行安装程序
+                            match run_installer(&file_path) {
+                                Ok(_) => {
+                                    tracing::info!("已启动安装程序，准备退出当前应用");
+
+                                    // 延迟退出，给安装程序时间启动
+                                    tokio::spawn(async {
+                                        tokio::time::sleep(tokio::time::Duration::from_secs(2))
+                                            .await;
+                                        tracing::info!("自动退出应用以便安装程序运行");
+                                        std::process::exit(0);
+                                    });
+                                }
+                                Err(e) => {
+                                    tracing::warn!("启动安装程序失败: {}，尝试打开文件位置", e);
+                                    // 如果无法运行安装程序，则打开文件所在目录
+                                    if let Err(open_err) = open_file_location(&file_path) {
+                                        tracing::warn!("打开文件所在目录也失败: {}", open_err);
+                                    }
+                                }
+                            }
+
+                            Ok(DownloadResult {
+                                success: true,
+                                message: format!("下载完成: {}", filename),
+                                file_path: Some(file_path.to_string_lossy().to_string()),
+                            })
+                        }
+                        Err(e) => Ok(DownloadResult {
+                            success: false,
+                            message: format!("保存文件失败: {}", e),
+                            file_path: None,
+                        }),
+                    }
+                }
+                Err(e) => Ok(DownloadResult {
+                    success: false,
+                    message: format!("读取下载内容失败: {}", e),
+                    file_path: None,
+                }),
+            }
+        }
+        Err(e) => Ok(DownloadResult {
+            success: false,
+            message: format!("网络请求失败: {}", e),
+            file_path: None,
+        }),
+    }
+}
+
+/// 从 GitHub API 获取实际的文件列表并匹配平台
+async fn get_platform_download_from_github(version: &str) -> Result<(String, String), String> {
+    let api_url = format!(
+        "https://api.github.com/repos/aiclientproxy/proxycast/releases/tags/v{}",
+        version
+    );
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&api_url)
+        .header("User-Agent", "ProxyCast")
+        .send()
+        .await
+        .map_err(|e| format!("请求 GitHub API 失败: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("GitHub API 请求失败: {}", response.status()));
+    }
+
+    let data: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("解析 GitHub API 响应失败: {}", e))?;
+
+    let assets = data["assets"]
+        .as_array()
+        .ok_or("GitHub API 响应中没有找到 assets")?;
+
+    // 根据当前平台匹配文件
+    let platform_patterns = get_platform_patterns();
+
+    for asset in assets {
+        let name = asset["name"].as_str().unwrap_or("");
+        let download_url = asset["browser_download_url"].as_str().unwrap_or("");
+
+        for pattern in &platform_patterns {
+            if name.contains(pattern) {
+                return Ok((name.to_string(), download_url.to_string()));
+            }
+        }
+    }
+
+    Err("未找到适合当前平台的安装包".to_string())
+}
+
+/// 获取当前平台的文件名匹配模式
+fn get_platform_patterns() -> Vec<&'static str> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+        vec!["x64-setup.exe", "x64_en-US.msi"]
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+    {
+        vec!["arm64-setup.exe", "arm64_en-US.msi"]
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    {
+        vec!["x64.dmg"]
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        vec!["aarch64.dmg"]
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        vec!["amd64.deb", "amd64.AppImage"]
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        vec!["arm64.deb", "arm64.AppImage"]
+    }
+
+    #[cfg(not(any(
+        all(
+            target_os = "windows",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        all(
+            target_os = "macos",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    )))]
+    {
+        vec![]
+    }
+}
+
+/// 获取下载目录
+fn get_download_directory(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    // 优先使用系统下载目录
+    if let Some(download_dir) = dirs::download_dir() {
+        return Ok(download_dir);
+    }
+
+    // 回退到应用数据目录
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("无法获取应用数据目录: {}", e))?;
+
+    let download_dir = app_data_dir.join("downloads");
+
+    // 确保目录存在
+    std::fs::create_dir_all(&download_dir).map_err(|e| format!("创建下载目录失败: {}", e))?;
+
+    Ok(download_dir)
+}
+
+/// 运行安装程序
+fn run_installer(file_path: &PathBuf) -> Result<(), String> {
+    let extension = file_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("");
+
+    match extension.to_lowercase().as_str() {
+        "exe" | "msi" => {
+            #[cfg(target_os = "windows")]
+            {
+                tracing::info!("Windows: 启动安装程序: {:?}", file_path);
+                std::process::Command::new(file_path)
+                    .spawn()
+                    .map_err(|e| format!("启动 Windows 安装程序失败: {}", e))?;
+            }
+
+            #[cfg(not(target_os = "windows"))]
+            {
+                return Err("Windows 安装程序只能在 Windows 系统上运行".to_string());
+            }
+        }
+        "dmg" => {
+            #[cfg(target_os = "macos")]
+            {
+                tracing::info!("macOS: 打开 DMG 文件: {:?}", file_path);
+                std::process::Command::new("open")
+                    .arg(&file_path)
+                    .spawn()
+                    .map_err(|e| format!("打开 macOS DMG 文件失败: {}", e))?;
+            }
+
+            #[cfg(not(target_os = "macos"))]
+            {
+                return Err("DMG 文件只能在 macOS 系统上打开".to_string());
+            }
+        }
+        "deb" => {
+            #[cfg(target_os = "linux")]
+            {
+                tracing::info!("Linux: 尝试安装 DEB 包: {:?}", file_path);
+                // 尝试使用系统默认的包管理器打开
+                let result = std::process::Command::new("xdg-open")
+                    .arg(&file_path)
+                    .spawn();
+
+                if result.is_err() {
+                    // 如果 xdg-open 失败，尝试使用 dpkg
+                    tracing::info!("xdg-open 失败，尝试使用 gdebi 或提示用户手动安装");
+                    return Err("请手动安装 DEB 包，或使用: sudo dpkg -i filename.deb".to_string());
+                }
+            }
+
+            #[cfg(not(target_os = "linux"))]
+            {
+                return Err("DEB 包只能在 Linux 系统上安装".to_string());
+            }
+        }
+        "appimage" => {
+            #[cfg(target_os = "linux")]
+            {
+                tracing::info!("Linux: 设置 AppImage 可执行权限并运行: {:?}", file_path);
+                // 设置可执行权限
+                std::process::Command::new("chmod")
+                    .args(&["+x", &file_path.to_string_lossy()])
+                    .output()
+                    .map_err(|e| format!("设置 AppImage 可执行权限失败: {}", e))?;
+
+                // 运行 AppImage
+                std::process::Command::new(&file_path)
+                    .spawn()
+                    .map_err(|e| format!("运行 AppImage 失败: {}", e))?;
+            }
+
+            #[cfg(not(target_os = "linux"))]
+            {
+                return Err("AppImage 只能在 Linux 系统上运行".to_string());
+            }
+        }
+        _ => {
+            return Err(format!("不支持的文件类型: {}", extension));
+        }
+    }
+
+    Ok(())
+}
+
+/// 打开文件所在位置
+fn open_file_location(file_path: &PathBuf) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        tracing::info!("Windows: 使用 explorer 打开文件位置: {:?}", file_path);
+        std::process::Command::new("explorer")
+            .args(["/select,", &file_path.to_string_lossy()])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .spawn()
+            .map_err(|e| format!("Windows explorer 启动失败: {}", e))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        tracing::info!("macOS: 使用 open -R 打开文件位置: {:?}", file_path);
+        std::process::Command::new("open")
+            .args(&["-R", &file_path.to_string_lossy()])
+            .spawn()
+            .map_err(|e| format!("macOS open 命令失败: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(parent) = file_path.parent() {
+            tracing::info!("Linux: 使用 xdg-open 打开目录: {:?}", parent);
+            std::process::Command::new("xdg-open")
+                .arg(parent)
+                .spawn()
+                .map_err(|e| format!("Linux xdg-open 命令失败: {}", e))?;
+        } else {
+            return Err("无法获取文件的父目录".to_string());
+        }
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        return Err("不支持的操作系统".to_string());
+    }
+
+    Ok(())
 }

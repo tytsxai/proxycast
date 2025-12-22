@@ -44,9 +44,9 @@ pub fn expand_tilde<P: AsRef<Path>>(path: P) -> PathBuf {
     if path_str == "~" {
         // 仅 ~
         home_dir
-    } else if path_str.starts_with("~/") {
+    } else if let Some(rest) = path_str.strip_prefix("~/") {
         // ~/path 格式
-        let rest = &path_str[2..]; // 跳过 "~/"
+        // 跳过 "~/"
         home_dir.join(rest)
     } else {
         // ~user/path 格式，不支持，返回原路径

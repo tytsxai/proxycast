@@ -5,6 +5,15 @@
 use crate::proxy::{ProxyClientFactory, ProxyError, ProxyProtocol};
 use proptest::prelude::*;
 
+/// 生成有效的主机名（必须以字母开头，避免纯数字被误认为 IP）
+fn arb_hostname() -> impl Strategy<Value = String> {
+    (
+        "[a-z]",          // 首字母必须是字母
+        "[a-z0-9]{0,19}", // 后续字符可以是字母或数字
+    )
+        .prop_map(|(first, rest)| format!("{}{}", first, rest))
+}
+
 /// 生成有效的 socks5 代理 URL
 fn arb_socks5_url() -> impl Strategy<Value = String> {
     (

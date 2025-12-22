@@ -22,9 +22,9 @@ pub struct CredentialSyncServiceState(pub Option<Arc<CredentialSyncService>>);
 
 /// 展开路径中的 ~ 为用户主目录
 fn expand_tilde(path: &str) -> String {
-    if path.starts_with("~/") {
+    if let Some(stripped) = path.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
-            return home.join(&path[2..]).to_string_lossy().to_string();
+            return home.join(stripped).to_string_lossy().to_string();
         }
     }
     path.to_string()
@@ -82,8 +82,7 @@ fn copy_and_rename_credential_file(
 
     // 对于 Kiro 凭证，需要合并 clientIdHash 文件中的 client_id/client_secret
     if provider_type == "kiro" {
-        let content =
-            fs::read_to_string(&source).map_err(|e| format!("读取凭证文件失败: {}", e))?;
+        let content = fs::read_to_string(source).map_err(|e| format!("读取凭证文件失败: {}", e))?;
         let mut creds: serde_json::Value =
             serde_json::from_str(&content).map_err(|e| format!("解析凭证文件失败: {}", e))?;
 
@@ -200,9 +199,9 @@ fn copy_and_rename_credential_file(
                 tracing::error!(
                     "[KIRO] IdC 认证方式缺少 clientId/clientSecret，无法创建有效的凭证副本"
                 );
-                return Err(format!(
-                    "IdC 认证凭证不完整：缺少 clientId/clientSecret。\n\n💡 解决方案：\n1. 确保 ~/.aws/sso/cache/ 目录下有对应的 clientIdHash 文件\n2. 如果使用 AWS IAM Identity Center，请确保已完成完整的 SSO 登录流程\n3. 或者尝试使用 Social 认证方式的凭证"
-                ));
+                return Err(
+                    "IdC 认证凭证不完整：缺少 clientId/clientSecret。\n\n💡 解决方案：\n1. 确保 ~/.aws/sso/cache/ 目录下有对应的 clientIdHash 文件\n2. 如果使用 AWS IAM Identity Center，请确保已完成完整的 SSO 登录流程\n3. 或者尝试使用 Social 认证方式的凭证".to_string()
+                );
             } else {
                 tracing::warn!("[KIRO] 未找到 client_id/client_secret，将使用 social 认证方式");
             }
@@ -214,7 +213,7 @@ fn copy_and_rename_credential_file(
         fs::write(&target_path, merged_content).map_err(|e| format!("写入凭证文件失败: {}", e))?;
     } else {
         // 其他类型直接复制
-        fs::copy(&source, &target_path).map_err(|e| format!("复制凭证文件失败: {}", e))?;
+        fs::copy(source, &target_path).map_err(|e| format!("复制凭证文件失败: {}", e))?;
     }
 
     // 返回新的文件路径
@@ -1117,7 +1116,7 @@ pub async fn get_antigravity_auth_url_and_wait(
     );
 
     // 从凭证中获取 project_id
-    let project_id = result.credentials.projectId.clone();
+    let project_id = result.credentials.project_id.clone();
 
     // 添加到凭证池
     let credential = pool_service.0.add_credential(
@@ -1165,7 +1164,7 @@ pub async fn start_antigravity_oauth_login(
     );
 
     // 从凭证中获取 project_id
-    let project_id = result.credentials.projectId.clone();
+    let project_id = result.credentials.project_id.clone();
 
     // 添加到凭证池
     let credential = pool_service.0.add_credential(

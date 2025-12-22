@@ -7,10 +7,10 @@
 //! - 7.2: 凭证健康状态变化时在 1 秒内更新托盘图标
 //! - 7.3: 托盘菜单打开时获取并显示最新信息
 
-use crate::tray::{CredentialHealth, TrayIconStatus, TrayStateSnapshot};
+use crate::tray::{TrayIconStatus, TrayStateSnapshot};
 use crate::TrayManagerState;
 use tauri::State;
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 
 /// 同步托盘状态
 ///

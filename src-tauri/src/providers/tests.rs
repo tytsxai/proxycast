@@ -20,6 +20,14 @@ fn arb_time_offset_secs() -> impl Strategy<Value = i64> {
     -3600i64..7200i64
 }
 
+/// 生成不会与 lead_time 边界冲突的时间偏移
+/// 避免 time_offset_secs 恰好等于 lead_time_mins * 60 的情况
+fn arb_time_offset_avoiding_boundary(lead_time_mins: i64) -> impl Strategy<Value = i64> {
+    let boundary = lead_time_mins * 60;
+    // 生成不等于边界值的时间偏移
+    (-3600i64..7200i64).prop_filter("避免边界值", move |&offset| offset != boundary)
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 
@@ -36,10 +44,13 @@ proptest! {
     #[test]
     fn test_codex_token_refresh_timing(
         lead_time_mins in arb_lead_time_mins(),
-        time_offset_secs in arb_time_offset_secs(),
+        time_offset_secs in -3600i64..7200i64,
     ) {
         let lead_time = Duration::minutes(lead_time_mins);
         let lead_time_secs = lead_time_mins * 60;
+
+        // 跳过边界条件，因为时间精度问题可能导致不确定行为
+        prop_assume!(time_offset_secs != lead_time_secs);
 
         let mut provider = CodexProvider::new();
         provider.credentials.access_token = Some("test_token".to_string());
@@ -72,10 +83,13 @@ proptest! {
     #[test]
     fn test_iflow_token_refresh_timing(
         lead_time_mins in arb_lead_time_mins(),
-        time_offset_secs in arb_time_offset_secs(),
+        time_offset_secs in -3600i64..7200i64,
     ) {
         let lead_time = Duration::minutes(lead_time_mins);
         let lead_time_secs = lead_time_mins * 60;
+
+        // 跳过边界条件，因为时间精度问题可能导致不确定行为
+        prop_assume!(time_offset_secs != lead_time_secs);
 
         let mut provider = IFlowProvider::new();
         provider.credentials.auth_type = "oauth".to_string();

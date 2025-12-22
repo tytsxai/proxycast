@@ -42,10 +42,10 @@ impl StreamForwarder {
         }
 
         // 处理 data: 前缀
-        let data = if trimmed.starts_with("data: ") {
-            &trimmed[6..]
-        } else if trimmed.starts_with("data:") {
-            &trimmed[5..]
+        let data = if let Some(stripped) = trimmed.strip_prefix("data: ") {
+            stripped
+        } else if let Some(stripped) = trimmed.strip_prefix("data:") {
+            stripped
         } else {
             trimmed
         };

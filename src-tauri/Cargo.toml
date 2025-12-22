@@ -1,6 +1,6 @@
 [package]
 name = "proxycast"
-version = "0.15.1"
+version = "0.17.1"
 description = "AI API Proxy Desktop App"
 authors = ["you"]
 edition = "2021"
@@ -55,12 +55,14 @@ tiktoken-rs = "0.6"
 async-trait = "0.1"
 thiserror = "1"
 base64 = "0.22"
+bytes = "1"
 rand = "0.8"
 sha2 = "0.10"
 serde_urlencoded = "0.7"
 open = "5"
 url = "2"
 once_cell = "1"
+tokio-util = "0.7"
 
 [dev-dependencies]
 proptest = "1"

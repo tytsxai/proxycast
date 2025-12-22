@@ -201,7 +201,7 @@ impl ProviderStep {
                     // 检查状态码是否可重试
                     let should_retry = err
                         .status_code
-                        .map_or(true, |code| self.retrier.config().is_retryable(code));
+                        .is_none_or(|code| self.retrier.config().is_retryable(code));
 
                     let should_failover = err.should_failover || err.is_quota_exceeded();
 
@@ -387,7 +387,7 @@ impl ProviderStep {
                         // 检查状态码是否可重试
                         let should_retry = err
                             .status_code
-                            .map_or(true, |code| self.retrier.config().is_retryable(code));
+                            .is_none_or(|code| self.retrier.config().is_retryable(code));
 
                         let should_failover = err.should_failover || err.is_quota_exceeded();
 

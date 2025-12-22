@@ -116,9 +116,9 @@ fn read_kiro_credential_info(creds_file_path: &str) -> Result<(String, Option<St
 
 /// 展开路径中的 ~ 为用户主目录
 fn expand_tilde(path: &str) -> String {
-    if path.starts_with("~/") {
+    if let Some(stripped) = path.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
-            return home.join(&path[2..]).to_string_lossy().to_string();
+            return home.join(stripped).to_string_lossy().to_string();
         }
     }
     path.to_string()

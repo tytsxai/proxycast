@@ -245,9 +245,6 @@ fn truncate_message(msg: &str, max_len: usize) -> String {
     }
 }
 
-/// Provider 操作结果类型别名
-pub type ProviderResult<T> = Result<T, ProviderError>;
-
 /// 从 HTTP 响应创建用户友好的错误
 ///
 /// 用于 Provider 中的 Token 刷新等操作
@@ -302,11 +299,6 @@ pub fn create_config_error(message: &str) -> Box<dyn Error + Send + Sync> {
 /// 创建认证错误
 pub fn create_auth_error(message: &str) -> Box<dyn Error + Send + Sync> {
     Box::new(ProviderError::AuthenticationError(message.to_string()))
-}
-
-/// 创建解析错误
-pub fn create_parse_error(message: &str) -> Box<dyn Error + Send + Sync> {
-    Box::new(ProviderError::ParseError(message.to_string()))
 }
 
 #[cfg(test)]

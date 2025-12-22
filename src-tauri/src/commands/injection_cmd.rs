@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// 注入配置状态
+#[allow(dead_code)]
 pub struct InjectionConfigState(pub Arc<RwLock<InjectionSettings>>);
 
 /// 注入配置响应

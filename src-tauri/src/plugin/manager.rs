@@ -13,8 +13,7 @@ use tokio::time::timeout;
 
 use super::loader::PluginLoader;
 use super::types::{
-    HookResult, Plugin, PluginConfig, PluginContext, PluginError, PluginInfo, PluginInstance,
-    PluginStatus,
+    HookResult, PluginConfig, PluginContext, PluginError, PluginInfo, PluginInstance, PluginStatus,
 };
 
 /// 插件管理器配置

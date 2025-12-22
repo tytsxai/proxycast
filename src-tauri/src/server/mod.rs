@@ -4,12 +4,10 @@ use crate::config::{
     ReloadResult,
 };
 use crate::converter::anthropic_to_openai::convert_anthropic_to_openai;
-use crate::converter::openai_to_antigravity::{
-    convert_antigravity_to_openai_response, convert_openai_to_antigravity_with_context,
-};
 use crate::credential::CredentialSyncService;
 use crate::database::dao::provider_pool::ProviderPoolDao;
 use crate::database::DbConnection;
+use crate::flow_monitor::{FlowInterceptor, FlowMonitor, FlowMonitorConfig};
 use crate::injection::Injector;
 use crate::logger::LogStore;
 use crate::models::anthropic::*;
@@ -23,28 +21,25 @@ use crate::providers::gemini::GeminiProvider;
 use crate::providers::kiro::KiroProvider;
 use crate::providers::openai_custom::OpenAICustomProvider;
 use crate::providers::qwen::QwenProvider;
-use crate::providers::vertex::VertexProvider;
 use crate::server_utils::{
     build_anthropic_response, build_anthropic_stream_response, build_gemini_native_request, health,
-    message_content_len, models, parse_cw_response, safe_truncate, CWParsedResponse,
+    models, parse_cw_response,
 };
 use crate::services::provider_pool_service::ProviderPoolService;
 use crate::services::token_cache_service::TokenCacheService;
-use crate::telemetry::{RequestLog, RequestStatus};
 use crate::websocket::{WsConfig, WsConnectionManager, WsStats};
 use axum::{
     body::Body,
     extract::{DefaultBodyLimit, Path, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
-use futures::stream;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::sync::{oneshot, RwLock};
 
 /// 记录请求统计到遥测系统
 pub fn record_request_telemetry(
@@ -232,6 +227,37 @@ impl ServerState {
         shared_tokens: Option<Arc<parking_lot::RwLock<crate::telemetry::TokenTracker>>>,
         shared_logger: Option<Arc<crate::telemetry::RequestLogger>>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.start_with_telemetry_and_flow_monitor(
+            logs,
+            pool_service,
+            token_cache,
+            db,
+            shared_stats,
+            shared_tokens,
+            shared_logger,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// 启动服务器（使用共享的遥测实例和 Flow Monitor）
+    ///
+    /// 这允许服务器与 TelemetryState 共享同一个 StatsAggregator、TokenTracker 和 RequestLogger，
+    /// 以及与 FlowMonitorState 共享同一个 FlowMonitor，
+    /// 使得请求处理过程中记录的统计数据和 Flow 数据能够在前端监控页面中显示。
+    pub async fn start_with_telemetry_and_flow_monitor(
+        &mut self,
+        logs: Arc<RwLock<LogStore>>,
+        pool_service: Arc<ProviderPoolService>,
+        token_cache: Arc<TokenCacheService>,
+        db: Option<DbConnection>,
+        shared_stats: Option<Arc<parking_lot::RwLock<crate::telemetry::StatsAggregator>>>,
+        shared_tokens: Option<Arc<parking_lot::RwLock<crate::telemetry::TokenTracker>>>,
+        shared_logger: Option<Arc<crate::telemetry::RequestLogger>>,
+        shared_flow_monitor: Option<Arc<FlowMonitor>>,
+        shared_flow_interceptor: Option<Arc<FlowInterceptor>>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if self.running {
             return Ok(());
         }
@@ -281,6 +307,8 @@ impl ServerState {
                 shared_stats,
                 shared_tokens,
                 shared_logger,
+                shared_flow_monitor,
+                shared_flow_interceptor,
                 Some(config),
                 Some(config_path),
             )
@@ -349,6 +377,10 @@ pub struct AppState {
     pub request_logger: Option<Arc<crate::telemetry::RequestLogger>>,
     /// Amp CLI 路由器
     pub amp_router: Arc<crate::router::AmpRouter>,
+    /// Flow 监控服务
+    pub flow_monitor: Arc<FlowMonitor>,
+    /// Flow 拦截器
+    pub flow_interceptor: Arc<FlowInterceptor>,
 }
 
 /// 启动配置文件监控
@@ -626,6 +658,8 @@ async fn run_server(
     shared_stats: Option<Arc<parking_lot::RwLock<crate::telemetry::StatsAggregator>>>,
     shared_tokens: Option<Arc<parking_lot::RwLock<crate::telemetry::TokenTracker>>>,
     shared_logger: Option<Arc<crate::telemetry::RequestLogger>>,
+    shared_flow_monitor: Option<Arc<FlowMonitor>>,
+    shared_flow_interceptor: Option<Arc<FlowInterceptor>>,
     config: Option<Config>,
     config_path: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -679,6 +713,14 @@ async fn run_server(
             .unwrap_or_default(),
     ));
 
+    // 使用共享的 Flow 监控服务，如果没有则创建新的
+    let flow_monitor = shared_flow_monitor
+        .unwrap_or_else(|| Arc::new(FlowMonitor::new(FlowMonitorConfig::default(), None)));
+
+    // 使用共享的 Flow 拦截器，如果没有则创建新的
+    let flow_interceptor =
+        shared_flow_interceptor.unwrap_or_else(|| Arc::new(FlowInterceptor::default()));
+
     let state = AppState {
         api_key: api_key.to_string(),
         base_url,
@@ -699,6 +741,8 @@ async fn run_server(
         hot_reload_manager: hot_reload_manager.clone(),
         request_logger: shared_logger,
         amp_router,
+        flow_monitor,
+        flow_interceptor,
     };
 
     // 启动配置文件监控
@@ -1158,7 +1202,8 @@ async fn anthropic_messages_with_selector(
             );
 
             // 根据凭证类型调用相应的 Provider
-            handlers::call_provider_anthropic(&state, &cred, &request).await
+            // 注意：这里没有 Flow 捕获，因为是通过 selector 路由的请求
+            handlers::call_provider_anthropic(&state, &cred, &request, None).await
         }
         None => {
             // 回退到默认 Kiro provider
@@ -1230,7 +1275,8 @@ async fn chat_completions_with_selector(
                 ),
             );
 
-            handlers::call_provider_openai(&state, &cred, &request).await
+            // 注意：这里没有 Flow 捕获，因为是通过 selector 路由的请求
+            handlers::call_provider_openai(&state, &cred, &request, None).await
         }
         None => {
             state.logs.write().await.add(
@@ -1326,7 +1372,8 @@ async fn amp_chat_completions(
                     &cred.uuid[..8]
                 ),
             );
-            handlers::call_provider_openai(&state, &cred, &request).await
+            // 注意：这里没有 Flow 捕获，因为是通过 AMP CLI 路由的请求
+            handlers::call_provider_openai(&state, &cred, &request, None).await
         }
         None => {
             state.logs.write().await.add(
@@ -1421,7 +1468,8 @@ async fn amp_messages(
                     &cred.uuid[..8]
                 ),
             );
-            handlers::call_provider_anthropic(&state, &cred, &request).await
+            // 注意：这里没有 Flow 捕获，因为是通过 AMP CLI 路由的请求
+            handlers::call_provider_anthropic(&state, &cred, &request, None).await
         }
         None => {
             state.logs.write().await.add(
@@ -1527,7 +1575,7 @@ async fn amp_management_proxy_internal(
         None => {
             state.logs.write().await.add(
                 "warn",
-                &format!("[AMP] No upstream URL configured for management proxy"),
+                "[AMP] No upstream URL configured for management proxy",
             );
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -1797,5 +1845,3 @@ async fn chat_completions_internal(state: &AppState, request: &ChatCompletionReq
             .into_response(),
     }
 }
-
-use crate::models::provider_pool_model::ProviderCredential;

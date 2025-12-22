@@ -149,10 +149,11 @@ impl ProtocolSelector {
     /// 获取推荐的中间协议（用于不支持直接转换的情况）
     pub fn intermediate_protocol(source: Protocol, target: Protocol) -> Option<Protocol> {
         // 大多数情况下，OpenAI 是最好的中间协议
-        if !Self::supports_direct_conversion(source, target) {
-            if source != Protocol::OpenAI && target != Protocol::OpenAI {
-                return Some(Protocol::OpenAI);
-            }
+        if !Self::supports_direct_conversion(source, target)
+            && source != Protocol::OpenAI
+            && target != Protocol::OpenAI
+        {
+            return Some(Protocol::OpenAI);
         }
         None
     }
@@ -172,11 +173,11 @@ impl ProtocolSelector {
     ) -> bool {
         // 工具调用在某些转换中需要特殊处理
         if has_tools {
-            match (source, target_provider) {
-                (Protocol::OpenAI, PoolProviderType::Kiro) => true,
-                (Protocol::Anthropic, PoolProviderType::Kiro) => true,
-                _ => false,
-            }
+            matches!(
+                (source, target_provider),
+                (Protocol::OpenAI, PoolProviderType::Kiro)
+                    | (Protocol::Anthropic, PoolProviderType::Kiro)
+            )
         } else if has_images {
             // 图片在某些 Provider 中需要特殊处理
             match target_provider {

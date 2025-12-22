@@ -331,7 +331,7 @@ fn find_function_name(contents: &[GeminiContent], tool_id: &str) -> String {
 
 /// 清理参数中不需要的字段
 fn clean_parameters(params: Option<serde_json::Value>) -> Option<serde_json::Value> {
-    params.map(|v| clean_value(v))
+    params.map(clean_value)
 }
 
 fn clean_value(value: serde_json::Value) -> serde_json::Value {
@@ -489,8 +489,7 @@ pub fn convert_antigravity_to_openai_response(
                         content.push_str(text);
                     }
                     if let Some(fc) = part.get("functionCall") {
-                        let call_id =
-                            format!("call_{}", uuid::Uuid::new_v4().to_string()[..8].to_string());
+                        let call_id = format!("call_{}", &uuid::Uuid::new_v4().to_string()[..8]);
                         tool_calls.push(serde_json::json!({
                             "id": call_id,
                             "type": "function",

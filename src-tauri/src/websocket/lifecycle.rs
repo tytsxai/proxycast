@@ -2,11 +2,9 @@
 //!
 //! 提供心跳检测、优雅关闭和资源清理功能
 
-use super::{WsConnection, WsConnectionStatus, WsError, WsMessage};
+use super::WsMessage;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
 
 /// 心跳管理器
 #[derive(Debug)]

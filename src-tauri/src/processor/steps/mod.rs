@@ -16,4 +16,4 @@ pub use plugin::{PluginPostStep, PluginPreStep};
 pub use provider::ProviderStep;
 pub use routing::RoutingStep;
 pub use telemetry::TelemetryStep;
-pub use traits::{PipelineStep, StepError};
+pub use traits::PipelineStep;

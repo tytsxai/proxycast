@@ -143,3 +143,80 @@ impl OpenAICustomProvider {
         Ok(data)
     }
 }
+
+// ============================================================================
+// StreamingProvider Trait 实现
+// ============================================================================
+
+use crate::providers::ProviderError;
+use crate::streaming::traits::{
+    reqwest_stream_to_stream_response, StreamFormat, StreamResponse, StreamingProvider,
+};
+use async_trait::async_trait;
+
+#[async_trait]
+impl StreamingProvider for OpenAICustomProvider {
+    /// 发起流式 API 调用
+    ///
+    /// 使用 reqwest 的 bytes_stream 返回字节流，支持真正的端到端流式传输。
+    /// OpenAI 使用 OpenAI SSE 格式。
+    ///
+    /// # 需求覆盖
+    /// - 需求 1.3: OpenAICustomProvider 流式支持
+    async fn call_api_stream(
+        &self,
+        request: &ChatCompletionRequest,
+    ) -> Result<StreamResponse, ProviderError> {
+        let api_key = self.config.api_key.as_ref().ok_or_else(|| {
+            ProviderError::ConfigurationError("OpenAI API key not configured".to_string())
+        })?;
+
+        // 确保请求启用流式
+        let mut stream_request = request.clone();
+        stream_request.stream = true;
+
+        let url = self.build_url("chat/completions");
+
+        tracing::info!(
+            "[OPENAI_STREAM] 发起流式请求: url={} model={}",
+            url,
+            request.model
+        );
+
+        let resp = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {api_key}"))
+            .header("Content-Type", "application/json")
+            .header("Accept", "text/event-stream")
+            .json(&stream_request)
+            .send()
+            .await
+            .map_err(|e| ProviderError::from_reqwest_error(&e))?;
+
+        // 检查响应状态
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            tracing::error!("[OPENAI_STREAM] 请求失败: {} - {}", status, body);
+            return Err(ProviderError::from_http_status(status.as_u16(), &body));
+        }
+
+        tracing::info!("[OPENAI_STREAM] 流式响应开始: status={}", status);
+
+        // 将 reqwest 响应转换为 StreamResponse
+        Ok(reqwest_stream_to_stream_response(resp))
+    }
+
+    fn supports_streaming(&self) -> bool {
+        self.is_configured()
+    }
+
+    fn provider_name(&self) -> &'static str {
+        "OpenAICustomProvider"
+    }
+
+    fn stream_format(&self) -> StreamFormat {
+        StreamFormat::OpenAiSse
+    }
+}

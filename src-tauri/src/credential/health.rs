@@ -225,10 +225,10 @@ impl HealthChecker {
         let mut recovered = Vec::new();
 
         for cred in pool.all() {
-            if matches!(cred.status, CredentialStatus::Unhealthy { .. }) {
-                if pool.mark_active(&cred.id).is_ok() {
-                    recovered.push(cred.id.clone());
-                }
+            if matches!(cred.status, CredentialStatus::Unhealthy { .. })
+                && pool.mark_active(&cred.id).is_ok()
+            {
+                recovered.push(cred.id.clone());
             }
         }
 

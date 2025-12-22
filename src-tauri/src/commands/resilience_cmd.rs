@@ -161,6 +161,7 @@ pub async fn clear_switch_log(
 }
 
 /// 添加切换日志条目（内部使用）
+#[allow(dead_code)]
 pub async fn add_switch_log_entry(
     state: &ResilienceConfigState,
     from_provider: &str,

@@ -106,8 +106,8 @@ impl<S> ManagementAuthService<S> {
         // 支持两种方式：Authorization: Bearer <key> 或 X-Management-Key: <key>
         if let Some(auth) = req.headers().get("authorization") {
             if let Ok(auth_str) = auth.to_str() {
-                if auth_str.starts_with("Bearer ") {
-                    return Some(auth_str[7..].to_string());
+                if let Some(stripped) = auth_str.strip_prefix("Bearer ") {
+                    return Some(stripped.to_string());
                 }
             }
         }

@@ -295,11 +295,7 @@ impl QuotaManager {
         }
 
         // 移除 -preview 后缀或 -preview-xxx 部分
-        if let Some(pos) = model.find("-preview") {
-            Some(model[..pos].to_string())
-        } else {
-            None
-        }
+        model.find("-preview").map(|pos| model[..pos].to_string())
     }
 
     /// 检查是否启用自动切换项目

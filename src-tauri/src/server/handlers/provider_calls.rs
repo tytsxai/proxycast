@@ -1,6 +1,18 @@
 //! Provider 调用处理器
 //!
 //! 根据凭证类型调用不同的 Provider API
+//!
+//! # 流式传输支持
+//!
+//! 本模块支持真正的端到端流式传输，通过以下组件实现：
+//! - `StreamManager`: 管理流式请求的生命周期
+//! - `StreamingProvider`: Provider 的流式 API 接口
+//! - `FlowMonitor`: 实时捕获流式响应
+//!
+//! # 需求覆盖
+//!
+//! - 需求 4.2: 调用 process_chunk 更新流重建器
+//! - 需求 5.1: 在收到 chunk 后立即转发给客户端
 
 use axum::{
     body::Body,
@@ -8,30 +20,55 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use futures::stream;
 
 use crate::converter::anthropic_to_openai::convert_anthropic_to_openai;
 use crate::converter::openai_to_antigravity::{
     convert_antigravity_to_openai_response, convert_openai_to_antigravity_with_context,
 };
+use crate::flow_monitor::stream_rebuilder::StreamFormat;
 use crate::models::anthropic::AnthropicMessagesRequest;
 use crate::models::openai::ChatCompletionRequest;
 use crate::models::provider_pool_model::{CredentialData, ProviderCredential};
 use crate::providers::{
-    AntigravityProvider, ClaudeCustomProvider, GeminiProvider, KiroProvider, OpenAICustomProvider,
-    QwenProvider, VertexProvider,
+    AntigravityProvider, ClaudeCustomProvider, KiroProvider, OpenAICustomProvider, VertexProvider,
 };
 use crate::server::AppState;
 use crate::server_utils::{
     build_anthropic_response, build_anthropic_stream_response, parse_cw_response, safe_truncate,
     CWParsedResponse,
 };
+use crate::streaming::{
+    StreamConfig, StreamContext, StreamError, StreamFormat as StreamingFormat, StreamManager,
+    StreamResponse,
+};
+
 /// 根据凭证调用 Provider (Anthropic 格式)
+///
+/// # 参数
+/// - `state`: 应用状态
+/// - `credential`: 凭证信息
+/// - `request`: Anthropic 格式请求
+/// - `flow_id`: Flow ID（可选，用于流式响应处理）
 pub async fn call_provider_anthropic(
     state: &AppState,
     credential: &ProviderCredential,
     request: &AnthropicMessagesRequest,
+    flow_id: Option<&str>,
 ) -> Response {
+    // 如果是流式请求且有 flow_id，设置流式状态
+    if request.stream {
+        if let Some(fid) = flow_id {
+            // 根据凭证类型确定流格式
+            let format = match &credential.credential {
+                CredentialData::KiroOAuth { .. } => StreamFormat::OpenAI,
+                CredentialData::ClaudeKey { .. } => StreamFormat::Anthropic,
+                CredentialData::AntigravityOAuth { .. } => StreamFormat::Gemini,
+                _ => StreamFormat::Unknown,
+            };
+            state.flow_monitor.set_streaming(fid, format).await;
+        }
+    }
+
     match &credential.credential {
         CredentialData::KiroOAuth { creds_file_path } => {
             // 使用 TokenCacheService 获取有效 token
@@ -644,13 +681,21 @@ pub async fn call_provider_anthropic(
         }
     }
 }
+
 /// 根据凭证调用 Provider (OpenAI 格式)
+///
+/// # 参数
+/// - `state`: 应用状态
+/// - `credential`: 凭证信息
+/// - `request`: OpenAI 格式请求
+/// - `flow_id`: Flow ID（可选，用于流式响应处理）
 pub async fn call_provider_openai(
     state: &AppState,
     credential: &ProviderCredential,
     request: &ChatCompletionRequest,
+    flow_id: Option<&str>,
 ) -> Response {
-    let start_time = std::time::Instant::now();
+    let _start_time = std::time::Instant::now();
     match &credential.credential {
         CredentialData::KiroOAuth { creds_file_path } => {
             let mut kiro = KiroProvider::new();
@@ -922,4 +967,509 @@ pub async fn call_provider_openai(
                 .into_response()
         }
     }
+}
+
+// ============================================================================
+// 流式传输支持
+// ============================================================================
+
+/// 获取凭证对应的流式格式
+///
+/// 根据凭证类型返回对应的流式响应格式。
+///
+/// # 参数
+/// - `credential`: 凭证信息
+///
+/// # 返回
+/// 流式格式枚举
+pub fn get_stream_format_for_credential(credential: &ProviderCredential) -> StreamingFormat {
+    match &credential.credential {
+        CredentialData::KiroOAuth { .. } => StreamingFormat::AwsEventStream,
+        CredentialData::ClaudeKey { .. } => StreamingFormat::AnthropicSse,
+        CredentialData::OpenAIKey { .. } => StreamingFormat::OpenAiSse,
+        // TODO: 任务 6 完成后，将这些改为 GeminiStream
+        CredentialData::AntigravityOAuth { .. } => StreamingFormat::OpenAiSse,
+        CredentialData::GeminiOAuth { .. } => StreamingFormat::OpenAiSse,
+        CredentialData::GeminiApiKey { .. } => StreamingFormat::OpenAiSse,
+        CredentialData::VertexKey { .. } => StreamingFormat::OpenAiSse,
+        _ => StreamingFormat::OpenAiSse,
+    }
+}
+
+/// 处理流式响应
+///
+/// 使用 StreamManager 处理流式响应，集成 Flow Monitor。
+///
+/// # 参数
+/// - `state`: 应用状态
+/// - `flow_id`: Flow ID（用于 Flow Monitor 集成）
+/// - `source_stream`: 源字节流
+/// - `source_format`: 源流格式
+/// - `target_format`: 目标流格式
+/// - `model`: 模型名称
+///
+/// # 返回
+/// SSE 格式的 HTTP 响应
+///
+/// # 需求覆盖
+/// - 需求 4.2: 调用 process_chunk 更新流重建器
+/// - 需求 5.1: 在收到 chunk 后立即转发给客户端
+pub async fn handle_streaming_response(
+    state: &AppState,
+    flow_id: Option<&str>,
+    source_stream: StreamResponse,
+    source_format: StreamingFormat,
+    target_format: StreamingFormat,
+    model: &str,
+) -> Response {
+    // 创建流式管理器
+    let manager = StreamManager::with_default_config();
+
+    // 创建流式上下文
+    let context = StreamContext::new(
+        flow_id.map(|s| s.to_string()),
+        source_format,
+        target_format,
+        model,
+    );
+
+    // 获取 flow_id 的克隆用于回调
+    let flow_id_for_callback = flow_id.map(|s| s.to_string());
+    let flow_monitor = state.flow_monitor.clone();
+
+    // 创建带回调的流式处理
+    let managed_stream = if let Some(fid) = flow_id_for_callback {
+        // 使用带回调的流式处理，集成 Flow Monitor
+        let on_chunk = move |event: &str, _metrics: &crate::streaming::StreamMetrics| {
+            // 解析 SSE 事件并调用 process_chunk
+            // SSE 格式: "event: xxx\ndata: {...}\n\n"
+            let lines: Vec<&str> = event.lines().collect();
+            let mut event_type: Option<&str> = None;
+            let mut data: Option<&str> = None;
+
+            for line in lines {
+                if line.starts_with("event: ") {
+                    event_type = Some(&line[7..]);
+                } else if line.starts_with("data: ") {
+                    data = Some(&line[6..]);
+                }
+            }
+
+            if let Some(d) = data {
+                // 使用 tokio::spawn 异步调用 process_chunk
+                let flow_monitor_clone = flow_monitor.clone();
+                let fid_clone = fid.clone();
+                let event_type_owned = event_type.map(|s| s.to_string());
+                let data_owned = d.to_string();
+
+                tokio::spawn(async move {
+                    flow_monitor_clone
+                        .process_chunk(&fid_clone, event_type_owned.as_deref(), &data_owned)
+                        .await;
+                });
+            }
+        };
+
+        let stream = manager.handle_stream_with_callback(context, source_stream, on_chunk);
+
+        // 转换为 Body 流
+        let body_stream = stream.map(|result| -> Result<axum::body::Bytes, std::io::Error> {
+            match result {
+                Ok(event) => Ok(axum::body::Bytes::from(event)),
+                Err(e) => Ok(axum::body::Bytes::from(e.to_sse_error())),
+            }
+        });
+
+        Body::from_stream(body_stream)
+    } else {
+        // 没有 flow_id，使用普通流式处理
+        let stream = manager.handle_stream(context, source_stream);
+
+        let body_stream = stream.map(|result| -> Result<axum::body::Bytes, std::io::Error> {
+            match result {
+                Ok(event) => Ok(axum::body::Bytes::from(event)),
+                Err(e) => Ok(axum::body::Bytes::from(e.to_sse_error())),
+            }
+        });
+
+        Body::from_stream(body_stream)
+    };
+
+    // 构建 SSE 响应
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header(header::CONNECTION, "keep-alive")
+        .header("X-Accel-Buffering", "no")
+        .body(managed_stream)
+        .unwrap_or_else(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    serde_json::json!({"error": {"message": "Failed to build streaming response"}}),
+                ),
+            )
+                .into_response()
+        })
+}
+
+/// 处理流式响应（带超时）
+///
+/// 与 `handle_streaming_response` 类似，但添加了超时保护。
+///
+/// # 参数
+/// - `state`: 应用状态
+/// - `flow_id`: Flow ID
+/// - `source_stream`: 源字节流
+/// - `source_format`: 源流格式
+/// - `target_format`: 目标流格式
+/// - `model`: 模型名称
+/// - `timeout_ms`: 超时时间（毫秒）
+///
+/// # 返回
+/// SSE 格式的 HTTP 响应
+///
+/// # 需求覆盖
+/// - 需求 6.2: 超时错误处理
+/// - 需求 6.5: 可配置的流式响应超时
+pub async fn handle_streaming_response_with_timeout(
+    state: &AppState,
+    flow_id: Option<&str>,
+    source_stream: StreamResponse,
+    source_format: StreamingFormat,
+    target_format: StreamingFormat,
+    model: &str,
+    timeout_ms: u64,
+) -> Response {
+    use futures::stream::BoxStream;
+
+    // 创建带超时配置的流式管理器
+    let config = StreamConfig::new()
+        .with_timeout_ms(timeout_ms)
+        .with_chunk_timeout_ms(30_000); // 30 秒 chunk 超时
+
+    let manager = StreamManager::new(config.clone());
+
+    // 创建流式上下文
+    let context = StreamContext::new(
+        flow_id.map(|s| s.to_string()),
+        source_format,
+        target_format,
+        model,
+    );
+
+    // 获取 flow_id 的克隆用于回调
+    let flow_id_for_callback = flow_id.map(|s| s.to_string());
+    let flow_monitor = state.flow_monitor.clone();
+
+    // 创建带超时的流式处理，使用 BoxStream 统一类型
+    let timeout_stream: BoxStream<'static, Result<String, crate::streaming::StreamError>> =
+        if let Some(fid) = flow_id_for_callback {
+            let on_chunk = move |event: &str, _metrics: &crate::streaming::StreamMetrics| {
+                let lines: Vec<&str> = event.lines().collect();
+                let mut event_type: Option<&str> = None;
+                let mut data: Option<&str> = None;
+
+                for line in lines {
+                    if line.starts_with("event: ") {
+                        event_type = Some(&line[7..]);
+                    } else if line.starts_with("data: ") {
+                        data = Some(&line[6..]);
+                    }
+                }
+
+                if let Some(d) = data {
+                    let flow_monitor_clone = flow_monitor.clone();
+                    let fid_clone = fid.clone();
+                    let event_type_owned = event_type.map(|s| s.to_string());
+                    let data_owned = d.to_string();
+
+                    tokio::spawn(async move {
+                        flow_monitor_clone
+                            .process_chunk(&fid_clone, event_type_owned.as_deref(), &data_owned)
+                            .await;
+                    });
+                }
+            };
+
+            let stream = manager.handle_stream_with_callback(context, source_stream, on_chunk);
+            Box::pin(crate::streaming::with_timeout(stream, &config))
+        } else {
+            let stream = manager.handle_stream(context, source_stream);
+            Box::pin(crate::streaming::with_timeout(stream, &config))
+        };
+
+    // 转换为 Body 流
+    let body_stream = timeout_stream.map(|result| -> Result<axum::body::Bytes, std::io::Error> {
+        match result {
+            Ok(event) => Ok(axum::body::Bytes::from(event)),
+            Err(e) => Ok(axum::body::Bytes::from(e.to_sse_error())),
+        }
+    });
+
+    // 构建 SSE 响应
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header(header::CONNECTION, "keep-alive")
+        .header("X-Accel-Buffering", "no")
+        .body(Body::from_stream(body_stream))
+        .unwrap_or_else(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    serde_json::json!({"error": {"message": "Failed to build streaming response"}}),
+                ),
+            )
+                .into_response()
+        })
+}
+
+/// 将 reqwest 响应转换为 StreamResponse
+///
+/// 用于将 Provider 的 HTTP 响应转换为统一的流式响应类型。
+///
+/// # 参数
+/// - `response`: reqwest HTTP 响应
+///
+/// # 返回
+/// 统一的流式响应类型
+pub fn response_to_stream(response: reqwest::Response) -> StreamResponse {
+    crate::streaming::reqwest_stream_to_stream_response(response)
+}
+
+// ============================================================================
+// 客户端断开检测
+// ============================================================================
+
+/// 带客户端断开检测的流式响应处理
+///
+/// 在流式传输过程中检测客户端是否断开连接，并在断开时：
+/// 1. 停止处理上游数据
+/// 2. 标记 Flow 为取消状态
+/// 3. 清理资源
+///
+/// # 参数
+/// - `state`: 应用状态
+/// - `flow_id`: Flow ID
+/// - `source_stream`: 源字节流
+/// - `source_format`: 源流格式
+/// - `target_format`: 目标流格式
+/// - `model`: 模型名称
+/// - `cancel_token`: 取消令牌（用于取消上游请求）
+///
+/// # 返回
+/// SSE 格式的 HTTP 响应
+///
+/// # 需求覆盖
+/// - 需求 5.4: 客户端断开时取消上游请求
+pub async fn handle_streaming_with_disconnect_detection(
+    state: &AppState,
+    flow_id: Option<&str>,
+    source_stream: StreamResponse,
+    source_format: StreamingFormat,
+    target_format: StreamingFormat,
+    model: &str,
+    cancel_token: Option<tokio_util::sync::CancellationToken>,
+) -> Response {
+    use futures::StreamExt;
+
+    // 创建流式管理器
+    let manager = StreamManager::with_default_config();
+
+    // 创建流式上下文
+    let context = StreamContext::new(
+        flow_id.map(|s| s.to_string()),
+        source_format,
+        target_format,
+        model,
+    );
+
+    // 获取 flow_id 的克隆
+    let flow_id_for_callback = flow_id.map(|s| s.to_string());
+    let flow_id_for_cancel = flow_id.map(|s| s.to_string());
+    let flow_monitor = state.flow_monitor.clone();
+    let flow_monitor_for_cancel = state.flow_monitor.clone();
+
+    // 创建带回调的流式处理
+    // 使用 BoxStream 统一类型
+    let managed_stream: futures::stream::BoxStream<
+        'static,
+        Result<String, crate::streaming::StreamError>,
+    > = if let Some(fid) = flow_id_for_callback {
+        let on_chunk = move |event: &str, _metrics: &crate::streaming::StreamMetrics| {
+            let lines: Vec<&str> = event.lines().collect();
+            let mut event_type: Option<&str> = None;
+            let mut data: Option<&str> = None;
+
+            for line in lines {
+                if line.starts_with("event: ") {
+                    event_type = Some(&line[7..]);
+                } else if line.starts_with("data: ") {
+                    data = Some(&line[6..]);
+                }
+            }
+
+            if let Some(d) = data {
+                let flow_monitor_clone = flow_monitor.clone();
+                let fid_clone = fid.clone();
+                let event_type_owned = event_type.map(|s| s.to_string());
+                let data_owned = d.to_string();
+
+                tokio::spawn(async move {
+                    flow_monitor_clone
+                        .process_chunk(&fid_clone, event_type_owned.as_deref(), &data_owned)
+                        .await;
+                });
+            }
+        };
+
+        Box::pin(manager.handle_stream_with_callback(context, source_stream, on_chunk))
+    } else {
+        // 没有 flow_id，使用普通流式处理
+        Box::pin(manager.handle_stream(context, source_stream))
+    };
+
+    // 如果有取消令牌，创建一个可取消的流
+    let body_stream = if let Some(token) = cancel_token {
+        // 创建一个可取消的流
+        let cancellable_stream = CancellableStream::new(managed_stream, token.clone());
+
+        // 当流被取消时，标记 Flow 为取消状态
+        let cancel_handler = {
+            let token = token.clone();
+            let flow_id = flow_id_for_cancel.clone();
+            async move {
+                token.cancelled().await;
+                if let Some(fid) = flow_id {
+                    flow_monitor_for_cancel.cancel_flow(&fid).await;
+                    tracing::info!("[STREAM] 客户端断开，已取消 Flow: {}", fid);
+                }
+            }
+        };
+
+        // 在后台运行取消处理器
+        tokio::spawn(cancel_handler);
+
+        // 转换为 Body 流
+        let stream =
+            cancellable_stream.map(|result| -> Result<axum::body::Bytes, std::io::Error> {
+                match result {
+                    Ok(event) => Ok(axum::body::Bytes::from(event)),
+                    Err(e) => Ok(axum::body::Bytes::from(e.to_sse_error())),
+                }
+            });
+
+        Body::from_stream(stream)
+    } else {
+        // 没有取消令牌，使用普通流
+        let stream = managed_stream.map(|result| -> Result<axum::body::Bytes, std::io::Error> {
+            match result {
+                Ok(event) => Ok(axum::body::Bytes::from(event)),
+                Err(e) => Ok(axum::body::Bytes::from(e.to_sse_error())),
+            }
+        });
+
+        Body::from_stream(stream)
+    };
+
+    // 构建 SSE 响应
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header(header::CONNECTION, "keep-alive")
+        .header("X-Accel-Buffering", "no")
+        .body(body_stream)
+        .unwrap_or_else(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    serde_json::json!({"error": {"message": "Failed to build streaming response"}}),
+                ),
+            )
+                .into_response()
+        })
+}
+
+/// 可取消的流包装器
+///
+/// 包装一个流，使其可以通过取消令牌取消。
+/// 当取消令牌被触发时，流将返回 ClientDisconnected 错误。
+pub struct CancellableStream<S> {
+    inner: S,
+    cancel_token: tokio_util::sync::CancellationToken,
+    cancelled: bool,
+}
+
+impl<S> CancellableStream<S> {
+    /// 创建新的可取消流
+    pub fn new(inner: S, cancel_token: tokio_util::sync::CancellationToken) -> Self {
+        Self {
+            inner,
+            cancel_token,
+            cancelled: false,
+        }
+    }
+}
+
+impl<S> futures::Stream for CancellableStream<S>
+where
+    S: futures::Stream<Item = Result<String, StreamError>> + Unpin,
+{
+    type Item = Result<String, StreamError>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        use std::task::Poll;
+
+        // 检查是否已取消
+        if self.cancelled {
+            return Poll::Ready(None);
+        }
+
+        // 检查取消令牌
+        if self.cancel_token.is_cancelled() {
+            self.cancelled = true;
+            return Poll::Ready(Some(Err(StreamError::ClientDisconnected)));
+        }
+
+        // 轮询内部流
+        std::pin::Pin::new(&mut self.inner).poll_next(cx)
+    }
+}
+
+/// 创建取消令牌
+///
+/// 创建一个可用于取消流式请求的令牌。
+///
+/// # 返回
+/// 取消令牌
+pub fn create_cancel_token() -> tokio_util::sync::CancellationToken {
+    tokio_util::sync::CancellationToken::new()
+}
+
+/// 检测客户端断开并触发取消
+///
+/// 监控客户端连接状态，当检测到断开时触发取消令牌。
+///
+/// # 参数
+/// - `cancel_token`: 取消令牌
+///
+/// # 注意
+/// 此函数应该在单独的任务中运行，与流式响应并行。
+/// 实际的断开检测依赖于 axum 的连接管理。
+pub async fn monitor_client_disconnect(cancel_token: tokio_util::sync::CancellationToken) {
+    // 在实际应用中，这里会监控客户端连接状态
+    // 当检测到断开时，调用 cancel_token.cancel()
+    //
+    // 由于 axum 的 SSE 响应会自动处理客户端断开，
+    // 这个函数主要用于需要主动检测断开的场景
+
+    // 等待取消令牌被触发（由其他地方触发）
+    cancel_token.cancelled().await;
 }

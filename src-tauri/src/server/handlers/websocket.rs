@@ -6,12 +6,15 @@ use axum::{
     body::Body,
     extract::{
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
-        State,
+        Query, State,
     },
     http::HeaderMap,
     response::IntoResponse,
 };
 use futures::{SinkExt, StreamExt as FuturesStreamExt};
+use serde::Deserialize;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use crate::converter::anthropic_to_openai::convert_anthropic_to_openai;
 use crate::converter::openai_to_antigravity::{
@@ -27,40 +30,57 @@ use crate::providers::{
 use crate::server::AppState;
 use crate::server_utils::parse_cw_response;
 use crate::websocket::{
-    WsApiRequest, WsApiResponse, WsEndpoint, WsError, WsMessage as WsProtoMessage,
+    WsApiRequest, WsApiResponse, WsEndpoint, WsError, WsFlowEvent, WsMessage as WsProtoMessage,
 };
+
+/// WebSocket 查询参数
+#[derive(Debug, Deserialize, Default)]
+pub struct WsQueryParams {
+    /// API 密钥（通过 URL 参数传递）
+    pub api_key: Option<String>,
+    /// Token（通过 URL 参数传递，与 api_key 等效）
+    pub token: Option<String>,
+}
 
 /// WebSocket 升级处理器
 pub async fn ws_upgrade_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
+    Query(params): Query<WsQueryParams>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    // 验证 API 密钥
+    // 验证 API 密钥：优先从 header 获取，其次从 URL 参数获取
     let auth = headers
         .get("authorization")
         .or_else(|| headers.get("x-api-key"))
         .and_then(|v| v.to_str().ok());
 
     let key = match auth {
-        Some(s) if s.starts_with("Bearer ") => &s[7..],
-        Some(s) => s,
+        Some(s) if s.starts_with("Bearer ") => Some(&s[7..]),
+        Some(s) => Some(s),
         None => {
-            return axum::http::Response::builder()
-                .status(401)
-                .body(Body::from("No API key provided"))
-                .unwrap()
-                .into_response();
+            // 尝试从 URL 参数获取
+            params.api_key.as_deref().or(params.token.as_deref())
         }
     };
 
-    if key != state.api_key {
-        return axum::http::Response::builder()
-            .status(401)
-            .body(Body::from("Invalid API key"))
-            .unwrap()
-            .into_response();
-    }
+    // 如果没有提供任何认证信息，允许连接（用于内部 Flow Monitor）
+    // 但会在日志中记录
+    let authenticated = match key {
+        Some(k) if k == state.api_key => true,
+        Some(_) => {
+            return axum::http::Response::builder()
+                .status(401)
+                .body(Body::from("Invalid API key"))
+                .unwrap()
+                .into_response();
+        }
+        None => {
+            // 允许无认证连接（仅用于本地 Flow Monitor UI）
+            tracing::debug!("[WS] Allowing unauthenticated connection for Flow Monitor");
+            false
+        }
+    };
 
     // 获取客户端信息
     let client_info = headers
@@ -68,11 +88,16 @@ pub async fn ws_upgrade_handler(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    ws.on_upgrade(move |socket| handle_websocket(socket, state, client_info))
+    ws.on_upgrade(move |socket| handle_websocket(socket, state, client_info, authenticated))
 }
 
 /// 处理 WebSocket 连接
-pub async fn handle_websocket(socket: WebSocket, state: AppState, client_info: Option<String>) {
+pub async fn handle_websocket(
+    socket: WebSocket,
+    state: AppState,
+    client_info: Option<String>,
+    authenticated: bool,
+) {
     let conn_id = uuid::Uuid::new_v4().to_string();
 
     // 注册连接
@@ -90,13 +115,73 @@ pub async fn handle_websocket(socket: WebSocket, state: AppState, client_info: O
     state.logs.write().await.add(
         "info",
         &format!(
-            "[WS] New connection: {} (client: {:?})",
+            "[WS] New connection: {} (client: {:?}, authenticated: {})",
             &conn_id[..8],
-            client_info
+            client_info,
+            authenticated
         ),
     );
 
-    let (mut sender, mut receiver) = socket.split();
+    let (sender, mut receiver) = socket.split();
+    let sender = Arc::new(Mutex::new(sender));
+
+    // Flow 事件订阅状态
+    let flow_subscribed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // 启动 Flow 事件转发任务
+    let flow_sender = sender.clone();
+    let flow_subscribed_clone = flow_subscribed.clone();
+    let flow_monitor = state.flow_monitor.clone();
+    let conn_id_clone = conn_id.clone();
+    let _logs_clone = state.logs.clone();
+
+    let flow_task = tokio::spawn(async move {
+        let mut flow_receiver = flow_monitor.subscribe();
+
+        loop {
+            match flow_receiver.recv().await {
+                Ok(event) => {
+                    // 只有在订阅状态下才转发事件
+                    if !flow_subscribed_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                        continue;
+                    }
+
+                    // 转换为 WebSocket 消息
+                    let ws_event: WsFlowEvent = event.into();
+                    let ws_msg = WsProtoMessage::FlowEvent(ws_event);
+
+                    if let Ok(msg_text) = serde_json::to_string(&ws_msg) {
+                        let mut sender_guard = flow_sender.lock().await;
+                        if sender_guard
+                            .send(WsMessage::Text(msg_text.into()))
+                            .await
+                            .is_err()
+                        {
+                            tracing::debug!(
+                                "[WS] Flow event send failed for connection {}",
+                                &conn_id_clone[..8]
+                            );
+                            break;
+                        }
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(
+                        "[WS] Flow event receiver lagged by {} messages for connection {}",
+                        n,
+                        &conn_id_clone[..8]
+                    );
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    tracing::debug!(
+                        "[WS] Flow event channel closed for connection {}",
+                        &conn_id_clone[..8]
+                    );
+                    break;
+                }
+            }
+        }
+    });
 
     // 消息处理循环
     while let Some(msg) = receiver.next().await {
@@ -107,14 +192,11 @@ pub async fn handle_websocket(socket: WebSocket, state: AppState, client_info: O
 
                 match serde_json::from_str::<WsProtoMessage>(&text) {
                     Ok(ws_msg) => {
-                        let response = handle_ws_message(&state, &conn_id, ws_msg).await;
+                        let response =
+                            handle_ws_message(&state, &conn_id, ws_msg, &flow_subscribed).await;
                         if let Some(resp) = response {
                             let resp_text = serde_json::to_string(&resp).unwrap_or_default();
-                            if sender
-                                .send(WsMessage::Text(resp_text.into()))
-                                .await
-                                .is_err()
-                            {
+                            if sender.send(WsMessage::Text(resp_text)).await.is_err() {
                                 break;
                             }
                         }
@@ -126,11 +208,7 @@ pub async fn handle_websocket(socket: WebSocket, state: AppState, client_info: O
                             e
                         )));
                         let error_text = serde_json::to_string(&error).unwrap_or_default();
-                        if sender
-                            .send(WsMessage::Text(error_text.into()))
-                            .await
-                            .is_err()
-                        {
+                        if sender.send(WsMessage::Text(error_text)).await.is_err() {
                             break;
                         }
                     }
@@ -142,16 +220,13 @@ pub async fn handle_websocket(socket: WebSocket, state: AppState, client_info: O
                     "Binary messages not supported",
                 ));
                 let error_text = serde_json::to_string(&error).unwrap_or_default();
-                if sender
-                    .send(WsMessage::Text(error_text.into()))
-                    .await
-                    .is_err()
-                {
+                if sender.send(WsMessage::Text(error_text)).await.is_err() {
                     break;
                 }
             }
             Ok(WsMessage::Ping(data)) => {
-                if sender.send(WsMessage::Pong(data)).await.is_err() {
+                let mut sender_guard = sender.lock().await;
+                if sender_guard.send(WsMessage::Pong(data)).await.is_err() {
                     break;
                 }
             }
@@ -171,6 +246,9 @@ pub async fn handle_websocket(socket: WebSocket, state: AppState, client_info: O
         }
     }
 
+    // 取消 Flow 事件转发任务
+    flow_task.abort();
+
     // 清理连接
     state.ws_manager.unregister(&conn_id);
     state.logs.write().await.add(
@@ -184,10 +262,56 @@ async fn handle_ws_message(
     state: &AppState,
     conn_id: &str,
     msg: WsProtoMessage,
+    flow_subscribed: &Arc<std::sync::atomic::AtomicBool>,
 ) -> Option<WsProtoMessage> {
     match msg {
         WsProtoMessage::Ping { timestamp } => Some(WsProtoMessage::Pong { timestamp }),
         WsProtoMessage::Pong { .. } => None,
+        WsProtoMessage::SubscribeFlowEvents => {
+            // 订阅 Flow 事件
+            flow_subscribed.store(true, std::sync::atomic::Ordering::Relaxed);
+            state.logs.write().await.add(
+                "info",
+                &format!(
+                    "[WS] Connection {} subscribed to flow events",
+                    &conn_id[..8]
+                ),
+            );
+            // 返回确认消息
+            Some(WsProtoMessage::Response(WsApiResponse {
+                request_id: "subscribe_flow_events".to_string(),
+                payload: serde_json::json!({
+                    "status": "subscribed",
+                    "message": "Successfully subscribed to flow events"
+                }),
+            }))
+        }
+        WsProtoMessage::UnsubscribeFlowEvents => {
+            // 取消订阅 Flow 事件
+            flow_subscribed.store(false, std::sync::atomic::Ordering::Relaxed);
+            state.logs.write().await.add(
+                "info",
+                &format!(
+                    "[WS] Connection {} unsubscribed from flow events",
+                    &conn_id[..8]
+                ),
+            );
+            // 返回确认消息
+            Some(WsProtoMessage::Response(WsApiResponse {
+                request_id: "unsubscribe_flow_events".to_string(),
+                payload: serde_json::json!({
+                    "status": "unsubscribed",
+                    "message": "Successfully unsubscribed from flow events"
+                }),
+            }))
+        }
+        WsProtoMessage::FlowEvent(_) => {
+            // 客户端不应该发送 FlowEvent 消息
+            Some(WsProtoMessage::Error(WsError::invalid_request(
+                None,
+                "FlowEvent messages are server-to-client only",
+            )))
+        }
         WsProtoMessage::Request(request) => {
             state.logs.write().await.add(
                 "info",

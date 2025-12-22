@@ -1,4 +1,5 @@
 pub mod config_cmd;
+pub mod flow_monitor_cmd;
 pub mod injection_cmd;
 pub mod mcp_cmd;
 pub mod oauth_cmd;
@@ -14,3 +15,4 @@ pub mod telemetry_cmd;
 pub mod tray_cmd;
 pub mod usage_cmd;
 pub mod websocket_cmd;
+pub mod window_cmd;

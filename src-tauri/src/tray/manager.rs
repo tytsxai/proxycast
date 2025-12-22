@@ -226,7 +226,7 @@ impl<R: Runtime> TrayManager<R> {
             .tooltip("ProxyCast - AI API 代理")
             .on_tray_icon_event(|tray, event| {
                 let app = tray.app_handle();
-                handle_tray_icon_event(&app, event);
+                handle_tray_icon_event(app, event);
             })
             .on_menu_event(|app, event| {
                 handle_menu_event(app, event.id().as_ref());

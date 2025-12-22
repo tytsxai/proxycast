@@ -6,6 +6,7 @@ import {
   Route,
   FileCode,
   Puzzle,
+  Activity,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -16,6 +17,7 @@ type Page =
   | "config-management"
   | "extensions"
   | "api-server"
+  | "flow-monitor"
   | "settings";
 
 interface SidebarProps {
@@ -30,6 +32,7 @@ const navItems = [
   { id: "config-management" as Page, label: "配置管理", icon: FileCode },
   { id: "extensions" as Page, label: "扩展", icon: Puzzle },
   { id: "api-server" as Page, label: "API Server", icon: Globe },
+  { id: "flow-monitor" as Page, label: "Flow Monitor", icon: Activity },
   { id: "settings" as Page, label: "设置", icon: Settings },
 ];
 

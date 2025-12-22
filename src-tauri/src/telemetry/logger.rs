@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
 use std::path::PathBuf;
 
 /// 日志记录器错误
@@ -282,7 +283,7 @@ impl RequestLogger {
             let entry = entry?;
             let path = entry.path();
 
-            if path.is_file() && path.extension().map_or(false, |ext| ext == "jsonl") {
+            if path.is_file() && path.extension().is_some_and(|ext| ext == "jsonl") {
                 // 从文件名解析日期
                 if let Some(file_date) = self.parse_log_file_date(&path) {
                     if file_date < cutoff {
@@ -393,7 +394,7 @@ impl RequestLogger {
     }
 
     /// 从日志文件名解析日期
-    fn parse_log_file_date(&self, path: &PathBuf) -> Option<DateTime<Utc>> {
+    fn parse_log_file_date(&self, path: &Path) -> Option<DateTime<Utc>> {
         let file_name = path.file_stem()?.to_str()?;
         // 文件名格式: requests_YYYY-MM-DD 或 requests_YYYY-MM-DD_N
         let date_part = file_name.strip_prefix("requests_")?;
@@ -441,7 +442,7 @@ impl RequestLogger {
             let entry = entry?;
             let path = entry.path();
 
-            if path.is_file() && path.extension().map_or(false, |ext| ext == "jsonl") {
+            if path.is_file() && path.extension().is_some_and(|ext| ext == "jsonl") {
                 if let Some(file_date) = self.parse_log_file_date(&path) {
                     if file_date >= cutoff {
                         log_files.push(path);

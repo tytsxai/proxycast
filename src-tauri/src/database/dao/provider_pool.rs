@@ -23,13 +23,11 @@ impl ProviderPoolDao {
              ORDER BY provider_type, created_at ASC",
         )?;
 
-        let rows = stmt.query_map([], |row| Self::row_to_credential(row))?;
+        let rows = stmt.query_map([], Self::row_to_credential)?;
 
         let mut credentials = Vec::new();
-        for row in rows {
-            if let Ok(cred) = row {
-                credentials.push(cred);
-            }
+        for cred in rows.flatten() {
+            credentials.push(cred);
         }
         Ok(credentials)
     }
@@ -54,10 +52,8 @@ impl ProviderPoolDao {
         })?;
 
         let mut credentials = Vec::new();
-        for row in rows {
-            if let Ok(cred) = row {
-                credentials.push(cred);
-            }
+        for cred in rows.flatten() {
+            credentials.push(cred);
         }
         Ok(credentials)
     }
@@ -112,10 +108,7 @@ impl ProviderPoolDao {
         let mut grouped: ProviderPools = std::collections::HashMap::new();
 
         for cred in all {
-            grouped
-                .entry(cred.provider_type)
-                .or_insert_with(Vec::new)
-                .push(cred);
+            grouped.entry(cred.provider_type).or_default().push(cred);
         }
 
         Ok(grouped)

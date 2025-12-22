@@ -1095,3 +1095,106 @@ impl CredentialProvider for KiroProvider {
         "kiro"
     }
 }
+
+// ============================================================================
+// StreamingProvider Trait 实现
+// ============================================================================
+
+use crate::providers::ProviderError;
+use crate::streaming::traits::{
+    reqwest_stream_to_stream_response, StreamFormat, StreamResponse, StreamingProvider,
+};
+
+#[async_trait]
+impl StreamingProvider for KiroProvider {
+    /// 发起流式 API 调用
+    ///
+    /// 使用 reqwest 的 bytes_stream 返回字节流，支持真正的端到端流式传输。
+    /// Kiro/CodeWhisperer 使用 AWS Event Stream 格式。
+    ///
+    /// # 需求覆盖
+    /// - 需求 1.1: KiroProvider 流式支持
+    async fn call_api_stream(
+        &self,
+        request: &ChatCompletionRequest,
+    ) -> Result<StreamResponse, ProviderError> {
+        let token = self
+            .credentials
+            .access_token
+            .as_ref()
+            .ok_or_else(|| ProviderError::AuthenticationError("No access token".to_string()))?;
+
+        let profile_arn = if self.credentials.auth_method.as_deref() == Some("social") {
+            self.credentials.profile_arn.clone()
+        } else {
+            None
+        };
+
+        let cw_request = convert_openai_to_codewhisperer(request, profile_arn.clone());
+        let url = self.get_base_url();
+
+        // 生成基于凭证的唯一 Machine ID
+        let machine_id = generate_machine_id_from_credentials(
+            profile_arn.as_deref(),
+            self.credentials.client_id.as_deref(),
+        );
+        let kiro_version = get_kiro_version();
+        let (os_name, node_version) = get_system_runtime_info();
+
+        tracing::debug!(
+            "[KIRO_STREAM] 发起流式请求: url={} machine_id={}...",
+            url,
+            &machine_id[..16]
+        );
+
+        let resp = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/vnd.amazon.eventstream")
+            .header("amz-sdk-invocation-id", uuid::Uuid::new_v4().to_string())
+            .header("amz-sdk-request", "attempt=1; max=1")
+            .header("x-amzn-kiro-agent-mode", "vibe")
+            .header(
+                "x-amz-user-agent",
+                format!("aws-sdk-js/1.0.0 KiroIDE-{kiro_version}-{machine_id}"),
+            )
+            .header(
+                "user-agent",
+                format!(
+                    "aws-sdk-js/1.0.0 ua/2.1 os/{os_name} lang/js md/nodejs#{node_version} api/codewhispererruntime#1.0.0 m/E KiroIDE-{kiro_version}-{machine_id}"
+                ),
+            )
+            .header("Connection", "close")
+            .json(&cw_request)
+            .send()
+            .await
+            .map_err(|e| ProviderError::from_reqwest_error(&e))?;
+
+        // 检查响应状态
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            tracing::error!("[KIRO_STREAM] 请求失败: {} - {}", status, body);
+            return Err(ProviderError::from_http_status(status.as_u16(), &body));
+        }
+
+        tracing::info!("[KIRO_STREAM] 流式响应开始: status={}", status);
+
+        // 将 reqwest 响应转换为 StreamResponse
+        Ok(reqwest_stream_to_stream_response(resp))
+    }
+
+    fn supports_streaming(&self) -> bool {
+        true
+    }
+
+    fn provider_name(&self) -> &'static str {
+        "KiroProvider"
+    }
+
+    fn stream_format(&self) -> StreamFormat {
+        StreamFormat::AwsEventStream
+    }
+}

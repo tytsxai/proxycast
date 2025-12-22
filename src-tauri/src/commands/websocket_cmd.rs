@@ -1,6 +1,6 @@
 //! WebSocket 相关的 Tauri 命令
 
-use crate::websocket::{WsConfig, WsConnection, WsStatsSnapshot};
+use crate::websocket::{WsConnection, WsStatsSnapshot};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -45,6 +45,7 @@ impl From<WsConnection> for WsConnectionInfo {
 }
 
 /// WebSocket 状态封装（用于 Tauri State）
+#[allow(dead_code)]
 pub struct WsServiceState {
     pub enabled: Arc<RwLock<bool>>,
     pub stats: Arc<RwLock<WsStatsSnapshot>>,
@@ -73,6 +74,7 @@ impl Default for WsServiceState {
 }
 
 /// 获取 WebSocket 服务状态
+#[allow(dead_code)]
 #[tauri::command]
 pub async fn get_websocket_status(
     state: tauri::State<'_, WsServiceState>,
@@ -90,6 +92,7 @@ pub async fn get_websocket_status(
 }
 
 /// 获取 WebSocket 连接列表
+#[allow(dead_code)]
 #[tauri::command]
 pub async fn get_websocket_connections(
     state: tauri::State<'_, WsServiceState>,
@@ -99,6 +102,7 @@ pub async fn get_websocket_connections(
 }
 
 /// 启用/禁用 WebSocket 服务
+#[allow(dead_code)]
 #[tauri::command]
 pub async fn set_websocket_enabled(
     state: tauri::State<'_, WsServiceState>,

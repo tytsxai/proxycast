@@ -20,7 +20,7 @@ pub use processor::MessageProcessor;
 pub use stream::{BackpressureController, StreamForwarder};
 pub use types::{
     WsApiRequest, WsApiResponse, WsConfig, WsConnection, WsConnectionStatus, WsEndpoint, WsError,
-    WsErrorCode, WsMessage, WsStats, WsStatsSnapshot, WsStreamChunk, WsStreamEnd,
+    WsErrorCode, WsFlowEvent, WsMessage, WsStats, WsStatsSnapshot, WsStreamChunk, WsStreamEnd,
 };
 
 use dashmap::DashMap;

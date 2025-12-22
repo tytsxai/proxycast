@@ -15,6 +15,12 @@ interface VersionInfo {
   error?: string;
 }
 
+interface DownloadResult {
+  success: boolean;
+  message: string;
+  filePath?: string;
+}
+
 interface ToolVersion {
   name: string;
   version: string | null;
@@ -30,6 +36,10 @@ export function AboutSection() {
     error: undefined,
   });
   const [checking, setChecking] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadResult, setDownloadResult] = useState<DownloadResult | null>(
+    null,
+  );
   const [toolVersions, setToolVersions] = useState<ToolVersion[]>([]);
   const [loadingTools, setLoadingTools] = useState(true);
 
@@ -67,6 +77,7 @@ export function AboutSection() {
 
   const handleCheckUpdate = async () => {
     setChecking(true);
+    setDownloadResult(null);
     try {
       const result = await invoke<VersionInfo>("check_for_updates");
       setVersionInfo(result);
@@ -78,6 +89,37 @@ export function AboutSection() {
       }));
     } finally {
       setChecking(false);
+    }
+  };
+
+  const handleDownloadUpdate = async () => {
+    setDownloading(true);
+    setDownloadResult(null);
+    try {
+      const result = await invoke<DownloadResult>("download_update");
+      setDownloadResult(result);
+
+      if (result.success) {
+        // 下载成功，显示安装提示
+        setTimeout(() => {
+          setDownloadResult({
+            ...result,
+            message: "安装程序已启动，应用将自动关闭以完成更新",
+          });
+        }, 1000);
+      } else {
+        // 下载失败，显示错误信息
+        console.error("Download failed:", result.message);
+      }
+    } catch (error) {
+      console.error("Failed to download update:", error);
+      setDownloadResult({
+        success: false,
+        message: "下载失败，请手动下载",
+        filePath: undefined,
+      });
+    } finally {
+      setDownloading(false);
     }
   };
 
@@ -116,7 +158,7 @@ export function AboutSection() {
         <div className="flex items-center justify-center gap-2">
           <button
             onClick={handleCheckUpdate}
-            disabled={checking}
+            disabled={checking || downloading}
             className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border text-sm hover:bg-muted disabled:opacity-50"
           >
             <RefreshCw
@@ -125,18 +167,66 @@ export function AboutSection() {
             检查更新
           </button>
 
-          {versionInfo.hasUpdate && versionInfo.downloadUrl && (
-            <a
-              href={versionInfo.downloadUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-green-600 text-white text-sm hover:bg-green-700"
-            >
-              <ExternalLink className="h-4 w-4" />
-              下载新版本
-            </a>
+          {versionInfo.hasUpdate && (
+            <>
+              <button
+                onClick={handleDownloadUpdate}
+                disabled={downloading}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-green-600 text-white text-sm hover:bg-green-700 disabled:opacity-50"
+              >
+                <RefreshCw
+                  className={`h-4 w-4 ${downloading ? "animate-spin" : ""}`}
+                />
+                {downloading ? "下载中..." : "下载更新"}
+              </button>
+
+              {versionInfo.downloadUrl && (
+                <a
+                  href={versionInfo.downloadUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border text-sm hover:bg-muted"
+                >
+                  <ExternalLink className="h-4 w-4" />
+                  网页下载
+                </a>
+              )}
+            </>
           )}
         </div>
+
+        {/* 下载结果提示 */}
+        {downloadResult && (
+          <div
+            className={`mt-2 p-3 rounded-lg text-sm ${
+              downloadResult.success
+                ? "bg-green-50 text-green-700 border border-green-200"
+                : "bg-red-50 text-red-700 border border-red-200"
+            }`}
+          >
+            <div className="flex items-start gap-2">
+              {downloadResult.success ? (
+                <CheckCircle2 className="h-4 w-4 mt-0.5 flex-shrink-0" />
+              ) : (
+                <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+              )}
+              <div className="flex-1">
+                <p>{downloadResult.message}</p>
+                {!downloadResult.success && versionInfo.downloadUrl && (
+                  <a
+                    href={versionInfo.downloadUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 mt-2 underline hover:no-underline"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                    前往网页下载
+                  </a>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 链接 */}

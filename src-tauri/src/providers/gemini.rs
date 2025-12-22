@@ -1080,7 +1080,7 @@ async fn save_gemini_credentials_to_file(
 
     // 获取凭证存储目录
     let credentials_dir = dirs::data_dir()
-        .ok_or_else(|| "无法获取应用数据目录")?
+        .ok_or("无法获取应用数据目录")?
         .join("proxycast")
         .join("credentials");
 
