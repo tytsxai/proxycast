@@ -970,17 +970,26 @@ impl ProviderPoolService {
                 let url = CodexProvider::build_responses_url(base);
 
                 // Codex/Yunyi 使用 responses API 格式；云驿等代理要求 stream 必须为 true
-                let request_body = serde_json::json!({
+                let is_yunyi = CodexProvider::is_yunyi_base_url(base);
+                let instructions = if is_yunyi {
+                    CodexProvider::yunyi_required_instructions()
+                } else {
+                    "请仅回复 OK。"
+                };
+                let mut request_body = serde_json::json!({
                     "model": model,
-                    "instructions": "请仅回复 OK。",
+                    "instructions": instructions,
                     "input": [{
                         "type": "message",
                         "role": "user",
                         "content": [{"type": "input_text", "text": "Say OK"}]
                     }],
-                    "max_output_tokens": 10,
                     "stream": true
                 });
+                // Yunyi 会拒绝未知字段（例如 max_output_tokens）
+                if !is_yunyi {
+                    request_body["max_output_tokens"] = serde_json::json!(10);
+                }
 
                 tracing::info!(
                     "[HEALTH_CHECK] Codex responses API URL: {}, model: {}",

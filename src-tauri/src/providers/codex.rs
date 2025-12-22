@@ -374,6 +374,12 @@ const OAUTH_ERROR_HTML: &str = r#"<!DOCTYPE html>
 </body>
 </html>"#;
 
+// Yunyi 的 /codex/responses 目前会对 `instructions` 做严格白名单校验：
+// - 必须是 Codex CLI 的“完整系统指令”字符串（任何增删改都会 400: Instructions are not valid）
+// - 必须使用 `stream=true`（否则 400: Stream must be set to true）
+// 因此在 Yunyi 模式下需要强制使用该固定指令，并把上游 system message 转为普通输入消息。
+const YUNYI_CODEX_INSTRUCTIONS: &str = include_str!("yunyi_codex_instructions.txt");
+
 /// Codex OAuth Provider
 ///
 /// Handles OAuth authentication and API calls for OpenAI Codex.
@@ -428,6 +434,16 @@ impl CodexProvider {
     /// Get the OAuth authorization URL
     pub fn get_auth_url(&self) -> &'static str {
         OPENAI_AUTH_URL
+    }
+
+    pub(crate) fn is_yunyi_base_url(base_url: &str) -> bool {
+        let b = base_url.trim().to_lowercase();
+        // 目前仅对 yunyi.cfd 做专门兼容，避免影响其它第三方代理
+        b.contains("yunyi.cfd") && b.contains("/codex")
+    }
+
+    pub(crate) fn yunyi_required_instructions() -> &'static str {
+        YUNYI_CODEX_INSTRUCTIONS
     }
 
     /// Get the OAuth token URL
@@ -1063,7 +1079,7 @@ impl CodexProvider {
         };
 
         // Build the Codex API URL
-        let url = match mode {
+        let (url, is_yunyi) = match mode {
             AuthMode::ApiKey => {
                 let has_custom_base_url = self
                     .credentials
@@ -1091,13 +1107,20 @@ impl CodexProvider {
                     );
                 }
 
-                Self::build_responses_url(base_url)
+                (
+                    Self::build_responses_url(base_url),
+                    has_custom_base_url && Self::is_yunyi_base_url(base_url),
+                )
             }
-            AuthMode::OAuth => format!("{}/responses", CODEX_API_BASE_URL),
+            AuthMode::OAuth => (format!("{}/responses", CODEX_API_BASE_URL), false),
         };
 
         // Transform OpenAI chat completion request to Codex format
-        let codex_request = transform_to_codex_format(request)?;
+        let codex_request = if is_yunyi {
+            transform_to_yunyi_codex_format(request, Self::yunyi_required_instructions())?
+        } else {
+            transform_to_codex_format(request)?
+        };
 
         // 这里用 info 级别输出，便于定位是否走三方 base_url（API Key）或走官方 OAuth 端点。
         let mode_str = match mode {
@@ -1116,6 +1139,24 @@ impl CodexProvider {
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false)
         {
+            let inst = if is_yunyi {
+                Self::yunyi_required_instructions().to_string()
+            } else {
+                "请仅回复 OK。".to_string()
+            };
+            let mut warm_body = serde_json::json!({
+                "model": request.get("model").and_then(|v| v.as_str()).unwrap_or("gpt-4.1"),
+                "instructions": inst,
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "ping"}]
+                }],
+                "stream": true
+            });
+            if !is_yunyi {
+                warm_body["max_output_tokens"] = serde_json::json!(1);
+            }
             let _ = self
                 .client
                 .post(&url)
@@ -1127,17 +1168,7 @@ impl CodexProvider {
                 .header("Conversation_id", uuid::Uuid::new_v4().to_string())
                 .header("Version", "0.77.0")
                 .header("User-Agent", "codex_exec/0.77.0 (ProxyCast; Mac OS; arm64)")
-                .json(&serde_json::json!({
-                    "model": request.get("model").and_then(|v| v.as_str()).unwrap_or("gpt-4.1"),
-                    "instructions": "请仅回复 OK。",
-                    "input": [{
-                        "type": "message",
-                        "role": "user",
-                        "content": [{"type": "input_text", "text": "ping"}]
-                    }],
-                    "max_output_tokens": 1,
-                    "stream": true
-                }))
+                .json(&warm_body)
                 .send()
                 .await;
         }
@@ -1371,6 +1402,84 @@ fn transform_to_codex_format(
     if let Some(reasoning) = request.get("reasoning") {
         codex_request["reasoning"] = reasoning.clone();
     }
+
+    Ok(codex_request)
+}
+
+/// Yunyi /codex/responses 兼容：要求固定 instructions + stream=true
+fn transform_to_yunyi_codex_format(
+    request: &serde_json::Value,
+    fixed_instructions: &str,
+) -> Result<serde_json::Value, Box<dyn Error + Send + Sync>> {
+    let model = request["model"].as_str().unwrap_or("gpt-5.2");
+    let messages = request["messages"].as_array();
+
+    // Yunyi 要求 input 必须为数组
+    let mut input = Vec::new();
+
+    if let Some(msgs) = messages {
+        for msg in msgs {
+            let role = msg["role"].as_str().unwrap_or("user");
+            let content = &msg["content"];
+
+            let text = if let Some(t) = content.as_str() {
+                t.to_string()
+            } else if let Some(arr) = content.as_array() {
+                arr.iter()
+                    .filter_map(|part| part["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            } else {
+                "".to_string()
+            };
+
+            match role {
+                // Yunyi 的 instructions 必须固定且不可追加，因此将 system message 转为普通输入
+                "system" => {
+                    if !text.is_empty() {
+                        input.push(serde_json::json!({
+                            "type": "message",
+                            "role": "user",
+                            "content": [{
+                                "type": "input_text",
+                                "text": format!("【system】\n{}", text)
+                            }]
+                        }));
+                    }
+                }
+                "user" | "assistant" => {
+                    let content_parts = if !text.is_empty() {
+                        vec![serde_json::json!({"type": "input_text", "text": text})]
+                    } else {
+                        vec![]
+                    };
+                    input.push(serde_json::json!({
+                        "type": "message",
+                        "role": role,
+                        "content": content_parts
+                    }));
+                }
+                "tool" => {
+                    // Tool results
+                    let tool_call_id = msg["tool_call_id"].as_str().unwrap_or("");
+                    let output = content.as_str().unwrap_or("");
+                    input.push(serde_json::json!({
+                        "type": "function_call_output",
+                        "call_id": tool_call_id,
+                        "output": output
+                    }));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut codex_request = serde_json::json!({
+        "model": model,
+        "input": input,
+        "stream": true,
+        "instructions": fixed_instructions
+    });
 
     Ok(codex_request)
 }
