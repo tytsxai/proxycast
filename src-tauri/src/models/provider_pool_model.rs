@@ -490,7 +490,7 @@ pub fn get_default_check_model(provider_type: PoolProviderType) -> &'static str 
         PoolProviderType::Antigravity => "gemini-3-pro-preview",
         PoolProviderType::Vertex => "gemini-2.0-flash",
         PoolProviderType::GeminiApiKey => "gemini-2.5-flash",
-        PoolProviderType::Codex => "gpt-4o-mini",
+        PoolProviderType::Codex => "gpt-5.2-codex",
         PoolProviderType::ClaudeOAuth => "claude-sonnet-4-5-20250929",
         PoolProviderType::IFlow => "deepseek-chat",
     }

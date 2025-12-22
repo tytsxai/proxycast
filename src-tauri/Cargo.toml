@@ -27,7 +27,9 @@ axum-server = { version = "0.7", features = ["tls-rustls"] }
 rustls-pemfile = "2"
 tower = "0.4"
 tower-http = { version = "0.5", features = ["limit"] }
-reqwest = { version = "0.12", features = ["json", "stream"] }
+# 使用 rustls TLS，避免在部分 Cloudflare/代理环境下被 default-tls(native-tls) 指纹拦截导致 502
+# 启用 cookies：用于兼容部分三方代理/Cloudflare 依赖的会话 Cookie（例如 sl-session）
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "cookies"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"

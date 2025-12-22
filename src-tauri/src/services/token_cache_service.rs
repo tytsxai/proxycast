@@ -425,6 +425,25 @@ impl TokenCacheService {
             .await
             .map_err(|e| format!("加载 Codex 凭证失败: {}", e))?;
 
+        // Codex 兼容 API Key 模式：auth.json 只有 api_key（无 refresh_token）
+        // 这种情况下不需要刷新，直接将 api_key 作为“访问令牌”缓存即可。
+        if let Some(api_key) = provider
+            .credentials
+            .api_key
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            return Ok(CachedTokenInfo {
+                access_token: Some(api_key.to_string()),
+                refresh_token: None,
+                expiry_time: None,
+                last_refresh: Some(Utc::now()),
+                refresh_error_count: 0,
+                last_refresh_error: None,
+            });
+        }
+
         let token = provider
             .refresh_token_with_retry(3)
             .await

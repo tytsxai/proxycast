@@ -40,6 +40,7 @@ impl ProviderPoolService {
         Self {
             client: Client::builder()
                 .timeout(Duration::from_secs(30))
+                .cookie_store(true)
                 .build()
                 .unwrap_or_default(),
             round_robin_index: std::sync::RwLock::new(HashMap::new()),
@@ -971,6 +972,7 @@ impl ProviderPoolService {
                 // Codex/Yunyi 使用 responses API 格式；云驿等代理要求 stream 必须为 true
                 let request_body = serde_json::json!({
                     "model": model,
+                    "instructions": "请仅回复 OK。",
                     "input": [{
                         "type": "message",
                         "role": "user",
@@ -980,11 +982,32 @@ impl ProviderPoolService {
                     "stream": true
                 });
 
-                tracing::debug!(
+                tracing::info!(
                     "[HEALTH_CHECK] Codex responses API URL: {}, model: {}",
                     url,
                     model
                 );
+
+                // 一些三方 Codex 代理会在 Cloudflare/Worker 层依赖会话 Cookie（例如 sl-session）。
+                // codex exec 往往会自动带上 cookie jar；这里先做一次无鉴权预热以获取 Set-Cookie。
+                let _ = self
+                    .client
+                    .post(&url)
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "text/event-stream")
+                    .header("Openai-Beta", "responses=experimental")
+                    .header("Originator", "codex_exec")
+                    .header("Session_id", uuid::Uuid::new_v4().to_string())
+                    .header("Conversation_id", uuid::Uuid::new_v4().to_string())
+                    .header("Version", "0.77.0")
+                    .header(
+                        "User-Agent",
+                        "codex_exec/0.77.0 (ProxyCast health check; Mac OS; arm64)",
+                    )
+                    .json(&request_body)
+                    .timeout(self.health_check_timeout)
+                    .send()
+                    .await;
 
                 let response = self
                     .client
@@ -993,12 +1016,13 @@ impl ProviderPoolService {
                     .header("Content-Type", "application/json")
                     .header("Accept", "text/event-stream")
                     .header("Openai-Beta", "responses=experimental")
-                    .header("Originator", "codex_cli_rs")
+                    .header("Originator", "codex_exec")
                     .header("Session_id", uuid::Uuid::new_v4().to_string())
                     .header("Conversation_id", uuid::Uuid::new_v4().to_string())
+                    .header("Version", "0.77.0")
                     .header(
                         "User-Agent",
-                        "codex_cli_rs/0.77.0 (ProxyCast health check; Mac OS; arm64)",
+                        "codex_exec/0.77.0 (ProxyCast health check; Mac OS; arm64)",
                     )
                     .json(&request_body)
                     .timeout(self.health_check_timeout)

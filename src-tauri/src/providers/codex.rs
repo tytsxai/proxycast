@@ -390,9 +390,13 @@ pub struct CodexProvider {
 
 impl Default for CodexProvider {
     fn default() -> Self {
+        let client = Client::builder()
+            .cookie_store(true)
+            .build()
+            .unwrap_or_else(|_| Client::new());
         Self {
             credentials: CodexCredentials::default(),
-            client: Client::new(),
+            client,
             creds_path: None,
             callback_port: DEFAULT_CALLBACK_PORT,
         }
@@ -1095,7 +1099,48 @@ impl CodexProvider {
         // Transform OpenAI chat completion request to Codex format
         let codex_request = transform_to_codex_format(request)?;
 
-        tracing::debug!("[CODEX] Calling API: {}", url);
+        // 这里用 info 级别输出，便于定位是否走三方 base_url（API Key）或走官方 OAuth 端点。
+        let mode_str = match mode {
+            AuthMode::ApiKey => "apikey",
+            AuthMode::OAuth => "oauth",
+        };
+        tracing::info!("[CODEX] 调用上游: mode={} url={}", mode_str, url);
+
+        // 部分三方 Codex 代理会在 Cloudflare/Worker 层依赖会话 Cookie（例如 sl-session）。
+        // codex exec 通常会维护 cookie jar；这里在自定义 base_url 场景下先做一次无鉴权预热以获取 Set-Cookie。
+        if matches!(mode, AuthMode::ApiKey)
+            && self
+                .credentials
+                .api_base_url
+                .as_deref()
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false)
+        {
+            let _ = self
+                .client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .header("Accept", "text/event-stream")
+                .header("Openai-Beta", "responses=experimental")
+                .header("Originator", "codex_exec")
+                .header("Session_id", uuid::Uuid::new_v4().to_string())
+                .header("Conversation_id", uuid::Uuid::new_v4().to_string())
+                .header("Version", "0.77.0")
+                .header("User-Agent", "codex_exec/0.77.0 (ProxyCast; Mac OS; arm64)")
+                .json(&serde_json::json!({
+                    "model": request.get("model").and_then(|v| v.as_str()).unwrap_or("gpt-4.1"),
+                    "instructions": "请仅回复 OK。",
+                    "input": [{
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "ping"}]
+                    }],
+                    "max_output_tokens": 1,
+                    "stream": true
+                }))
+                .send()
+                .await;
+        }
 
         let mut req = self
             .client
@@ -1119,12 +1164,9 @@ impl CodexProvider {
 
         if should_add_codex_cli_headers {
             req = req
-                .header("Version", "0.21.0")
-                .header(
-                    "User-Agent",
-                    "codex_cli_rs/0.50.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464",
-                )
-                .header("Originator", "codex_cli_rs")
+                .header("Version", "0.77.0")
+                .header("User-Agent", "codex_exec/0.77.0 (ProxyCast; Mac OS; arm64)")
+                .header("Originator", "codex_exec")
                 .header("Session_id", uuid::Uuid::new_v4().to_string())
                 .header("Conversation_id", uuid::Uuid::new_v4().to_string())
                 // Add account ID header if available
@@ -1307,9 +1349,10 @@ fn transform_to_codex_format(
         "stream": stream
     });
 
-    if let Some(inst) = instructions {
-        codex_request["instructions"] = serde_json::json!(inst);
-    }
+    // 兼容部分三方 Codex 代理：要求必须提供 instructions 字段。
+    // OpenAI responses API 对 instructions 通常是可选的，因此这里总是提供一个默认值。
+    let inst = instructions.unwrap_or_else(|| "你是一个乐于助人的助手。".to_string());
+    codex_request["instructions"] = serde_json::json!(inst);
 
     if let Some(t) = tools {
         codex_request["tools"] = serde_json::json!(t);
