@@ -4,7 +4,7 @@
 
 use crate::config::RemoteManagementConfig;
 use crate::middleware::management_auth::{
-    clear_auth_failure_state, ManagementAuthLayer, ManagementAuthService,
+    clear_auth_failure_state_for_secret, ManagementAuthLayer, ManagementAuthService,
 };
 use axum::{
     body::Body,
@@ -125,12 +125,12 @@ fn create_request_with_management_key_and_forwarded(
 
 #[test]
 fn test_management_auth_rate_limit_after_failures() {
-    clear_auth_failure_state();
     let config = RemoteManagementConfig {
         allow_remote: true,
         secret_key: Some("valid_key".to_string()),
         disable_control_panel: false,
     };
+    clear_auth_failure_state_for_secret("valid_key");
     let layer = ManagementAuthLayer::new(config);
     let mut service = layer.layer(MockService);
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -163,7 +163,7 @@ proptest! {
     fn prop_management_auth_rejection_missing_key(
         secret_key in arb_secret_key()
     ) {
-        clear_auth_failure_state();
+        clear_auth_failure_state_for_secret(&secret_key);
         // Create config with a valid secret_key
         let config = RemoteManagementConfig {
             allow_remote: true,
@@ -199,7 +199,7 @@ proptest! {
     fn prop_management_auth_rejection_invalid_key(
         secret_key in arb_secret_key()
     ) {
-        clear_auth_failure_state();
+        clear_auth_failure_state_for_secret(&secret_key);
         // Create config with a valid secret_key
         let config = RemoteManagementConfig {
             allow_remote: true,
@@ -236,7 +236,7 @@ proptest! {
     fn prop_management_auth_acceptance_valid_key(
         secret_key in arb_secret_key()
     ) {
-        clear_auth_failure_state();
+        clear_auth_failure_state_for_secret(&secret_key);
         // Create config with a valid secret_key
         let config = RemoteManagementConfig {
             allow_remote: true,
@@ -272,7 +272,7 @@ proptest! {
     fn prop_management_auth_acceptance_x_management_key(
         secret_key in arb_secret_key()
     ) {
-        clear_auth_failure_state();
+        clear_auth_failure_state_for_secret(&secret_key);
         // Create config with a valid secret_key
         let config = RemoteManagementConfig {
             allow_remote: true,
@@ -308,7 +308,7 @@ proptest! {
     fn prop_management_auth_rejection_invalid_x_management_key(
         secret_key in arb_secret_key()
     ) {
-        clear_auth_failure_state();
+        clear_auth_failure_state_for_secret(&secret_key);
         // Create config with a valid secret_key
         let config = RemoteManagementConfig {
             allow_remote: true,

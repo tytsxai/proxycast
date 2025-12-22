@@ -16,7 +16,9 @@ use axum::{
     body::Body,
     http::{Request, Response, StatusCode},
 };
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use futures::future::BoxFuture;
+use sha2::{Digest, Sha256};
 use std::{
     net::{IpAddr, SocketAddr},
     sync::Arc,
@@ -48,7 +50,15 @@ fn failure_map() -> &'static Mutex<std::collections::HashMap<String, FailureStat
 }
 
 #[cfg(test)]
+pub(crate) fn clear_auth_failure_state_for_secret(secret_key: &str) {
+    let mut map = failure_map().lock().unwrap();
+    let prefix = format!("{}:", secret_hash_prefix(secret_key));
+    map.retain(|k, _| !k.starts_with(&prefix));
+}
+
+#[cfg(test)]
 pub(crate) fn clear_auth_failure_state() {
+    // 保留旧接口，避免测试代码外部调用失败；仅在本文件测试中使用。
     let mut map = failure_map().lock().unwrap();
     map.clear();
 }
@@ -137,6 +147,17 @@ impl<S> ManagementAuthService<S> {
         "unknown".to_string()
     }
 
+    fn scoped_client_id(expected_secret_key: &str, req: &Request<Body>) -> String {
+        // 以“配置的 secret_key”做命名空间隔离：
+        // - 避免不同 secret_key 的测试/实例互相干扰
+        // - 不直接存储明文 secret_key（使用哈希前缀）
+        format!(
+            "{}:{}",
+            secret_hash_prefix(expected_secret_key),
+            Self::get_client_id(req)
+        )
+    }
+
     fn check_rate_limit(client_id: &str) -> bool {
         let now = Instant::now();
         let mut map = failure_map().lock().unwrap();
@@ -199,6 +220,11 @@ impl<S> ManagementAuthService<S> {
     }
 }
 
+fn secret_hash_prefix(secret_key: &str) -> String {
+    let digest = Sha256::digest(secret_key.as_bytes());
+    URL_SAFE_NO_PAD.encode(digest)
+}
+
 impl<S> Service<Request<Body>> for ManagementAuthService<S>
 where
     S: Service<Request<Body>, Response = Response<Body>> + Clone + Send + 'static,
@@ -217,14 +243,6 @@ where
         let mut inner = self.inner.clone();
 
         Box::pin(async move {
-            let client_id = Self::get_client_id(&req);
-            if !Self::check_rate_limit(&client_id) {
-                return Ok(create_error_response(
-                    StatusCode::TOO_MANY_REQUESTS,
-                    "Too many failed authentication attempts",
-                ));
-            }
-
             // 1. 检查 secret_key 是否为空（禁用管理 API）
             let secret_key = match &config.secret_key {
                 Some(key) if !key.is_empty() => key.clone(),
@@ -236,6 +254,14 @@ where
                     ));
                 }
             };
+
+            let client_id = Self::scoped_client_id(&secret_key, &req);
+            if !Self::check_rate_limit(&client_id) {
+                return Ok(create_error_response(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "Too many failed authentication attempts",
+                ));
+            }
 
             // 2. 检查 allow_remote 限制
             let client_addr = Self::get_client_addr(&req);
