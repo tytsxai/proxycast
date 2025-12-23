@@ -20,6 +20,8 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use chrono::Utc;
+use std::collections::HashMap;
 
 use crate::converter::anthropic_to_openai::convert_anthropic_to_openai;
 use crate::flow_monitor::{
@@ -30,6 +32,7 @@ use crate::flow_monitor::{
 use crate::models::anthropic::AnthropicMessagesRequest;
 use crate::models::openai::ChatCompletionRequest;
 use crate::processor::RequestContext;
+use crate::server::client_detector::ClientType;
 use crate::server::{record_request_telemetry, record_token_usage, AppState};
 use crate::server_utils::{
     build_anthropic_response, build_anthropic_stream_response, message_content_len,
@@ -39,8 +42,6 @@ use crate::streaming::StreamFormat as StreamingFormat;
 use crate::ProviderType;
 
 use super::{call_provider_anthropic, call_provider_openai};
-use chrono::Utc;
-use std::collections::HashMap;
 
 // ============================================================================
 // Flow 捕获辅助函数
@@ -324,6 +325,46 @@ fn build_llm_response(status_code: u16, content: &str, usage: Option<(u32, u32)>
         timestamp_end: now,
         stream_info: None,
     }
+}
+
+// ============================================================================
+// Provider 选择辅助函数
+// ============================================================================
+
+/// 根据客户端类型和端点配置选择 Provider
+///
+/// **Validates: Requirements 1.3, 1.4, 3.4**
+///
+/// 优先级：端点 Provider 配置 > 默认 Provider
+///
+/// # 参数
+/// - `headers`: HTTP 请求头，用于提取 User-Agent
+/// - `state`: 应用状态，包含端点配置和默认 Provider
+///
+/// # 返回
+/// 选择的 Provider 名称和检测到的客户端类型
+async fn select_provider_for_client(headers: &HeaderMap, state: &AppState) -> (String, ClientType) {
+    // 从 User-Agent 检测客户端类型
+    let user_agent = headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let client_type = ClientType::from_user_agent(user_agent);
+
+    // 获取端点 Provider 配置
+    let endpoint_providers = state.endpoint_providers.read().await;
+    let endpoint_provider = endpoint_providers.get_provider(client_type.config_key());
+
+    // 获取默认 Provider
+    let default_provider = state.default_provider.read().await.clone();
+
+    // 选择 Provider：端点配置优先，否则使用默认
+    let selected_provider = match endpoint_provider {
+        Some(provider) => provider.clone(),
+        None => default_provider,
+    };
+
+    (selected_provider, client_type)
 }
 
 // ============================================================================
@@ -635,6 +676,19 @@ pub async fn chat_completions(
         }
     }
 
+    // 根据客户端类型选择 Provider
+    // **Validates: Requirements 3.1, 3.3, 3.4**
+    let (selected_provider, client_type) = select_provider_for_client(&headers, &state).await;
+
+    // 记录客户端检测和 Provider 选择结果
+    state.logs.write().await.add(
+        "info",
+        &format!(
+            "[CLIENT] request_id={} client_type={} selected_provider={}",
+            ctx.request_id, client_type, selected_provider
+        ),
+    );
+
     // 获取当前默认 provider（用于凭证池选择的兜底）
     let default_provider = state.default_provider.read().await.clone();
     let routed_provider = provider.to_string();
@@ -839,12 +893,35 @@ pub async fn chat_completions(
         return response;
     }
 
-    // 回退到旧的单凭证模式
+    // 回退到旧的单凭证模式（仅当选择的 Provider 是 Kiro 时）
+    // 如果选择的 Provider 不是 Kiro，且凭证池中没有找到凭证，返回错误
+    // **Validates: Requirements 3.2**
+    if selected_provider.to_lowercase() != "kiro" {
+        state.logs.write().await.add(
+            "error",
+            &format!(
+                "[ROUTE] No pool credential found for '{}' (client_type={}), and legacy mode only supports Kiro",
+                selected_provider, client_type
+            ),
+        );
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": {
+                    "message": format!("没有找到可用的 '{}' 凭证。请在凭证池中添加对应的凭证。", selected_provider),
+                    "type": "no_credential_error",
+                    "code": "no_credential"
+                }
+            })),
+        )
+            .into_response();
+    }
+
     state.logs.write().await.add(
         "debug",
         &format!(
             "[ROUTE] No pool credential found for '{}', using legacy mode",
-            default_provider
+            selected_provider
         ),
     );
 
@@ -1438,6 +1515,19 @@ pub async fn anthropic_messages(
         }
     }
 
+    // 根据客户端类型选择 Provider
+    // **Validates: Requirements 3.1, 3.3, 3.4**
+    let (selected_provider, client_type) = select_provider_for_client(&headers, &state).await;
+
+    // 记录客户端检测和 Provider 选择结果
+    state.logs.write().await.add(
+        "info",
+        &format!(
+            "[CLIENT] request_id={} client_type={} selected_provider={}",
+            ctx.request_id, client_type, selected_provider
+        ),
+    );
+
     // 获取当前默认 provider（用于凭证池选择的兜底）
     let default_provider = state.default_provider.read().await.clone();
     let routed_provider = provider.to_string();
@@ -1644,12 +1734,35 @@ pub async fn anthropic_messages(
         return response;
     }
 
-    // 回退到旧的单凭证模式
+    // 回退到旧的单凭证模式（仅当选择的 Provider 是 Kiro 时）
+    // 如果选择的 Provider 不是 Kiro，且凭证池中没有找到凭证，返回错误
+    // **Validates: Requirements 3.2**
+    if selected_provider.to_lowercase() != "kiro" {
+        state.logs.write().await.add(
+            "error",
+            &format!(
+                "[ROUTE] No pool credential found for '{}' (client_type={}), and legacy mode only supports Kiro",
+                selected_provider, client_type
+            ),
+        );
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "type": "error",
+                "error": {
+                    "type": "no_credential_error",
+                    "message": format!("没有找到可用的 '{}' 凭证。请在凭证池中添加对应的凭证。", selected_provider)
+                }
+            })),
+        )
+            .into_response();
+    }
+
     state.logs.write().await.add(
         "debug",
         &format!(
             "[ROUTE] No pool credential found for '{}', using legacy mode",
-            default_provider
+            selected_provider
         ),
     );
 

@@ -4,9 +4,11 @@ import { ModelMapping } from "./ModelMapping";
 import { RoutingRules } from "./RoutingRules";
 import { ExclusionList } from "./ExclusionList";
 import { InjectionRules } from "./InjectionRules";
+import { ClientRouting } from "./ClientRouting";
 import { HelpTip } from "@/components/HelpTip";
 import { routerApi } from "@/lib/api/router";
 import { injectionApi } from "@/lib/api/injection";
+import { setEndpointProvider } from "@/hooks/useTauri";
 import type {
   ModelAlias,
   RoutingRule,
@@ -19,7 +21,7 @@ export interface RoutingPageRef {
   refresh: () => void;
 }
 
-type TabType = "aliases" | "rules" | "exclusions" | "injection";
+type TabType = "aliases" | "rules" | "exclusions" | "injection" | "clients";
 
 interface RoutingPageProps {
   hideHeader?: boolean;
@@ -27,7 +29,7 @@ interface RoutingPageProps {
 
 export const RoutingPage = forwardRef<RoutingPageRef, RoutingPageProps>(
   ({ hideHeader = false }, ref) => {
-    const [activeTab, setActiveTab] = useState<TabType>("aliases");
+    const [activeTab, setActiveTab] = useState<TabType>("clients");
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
@@ -81,7 +83,32 @@ export const RoutingPage = forwardRef<RoutingPageRef, RoutingPageProps>(
     ) => {
       setApplyingPreset(presetId);
       try {
+        // 先找到预设配置
+        const preset = presets.find((p) => p.id === presetId);
+
+        // 应用别名和规则
         await routerApi.applyRecommendedPreset(presetId, merge);
+
+        // 如果预设包含客户端路由配置，也应用它
+        if (preset?.endpoint_providers) {
+          const ep = preset.endpoint_providers;
+          const clientTypes = [
+            "cursor",
+            "claude_code",
+            "codex",
+            "windsurf",
+            "kiro",
+            "other",
+          ] as const;
+          for (const clientType of clientTypes) {
+            const provider = ep[clientType];
+            // 只有在非合并模式或有值时才设置
+            if (!merge || provider) {
+              await setEndpointProvider(clientType, provider || null);
+            }
+          }
+        }
+
         await refresh();
         setShowPresets(false);
       } catch (e) {
@@ -178,6 +205,7 @@ export const RoutingPage = forwardRef<RoutingPageRef, RoutingPageProps>(
     };
 
     const tabs: { id: TabType; label: string; count: number }[] = [
+      { id: "clients", label: "客户端路由", count: 0 },
       { id: "aliases", label: "模型别名", count: aliases.length },
       { id: "rules", label: "路由规则", count: rules.length },
       {
@@ -298,6 +326,16 @@ export const RoutingPage = forwardRef<RoutingPageRef, RoutingPageProps>(
                         <div className="flex gap-4 mt-2 text-xs text-muted-foreground">
                           <span>{preset.aliases.length} 个别名</span>
                           <span>{preset.rules.length} 条规则</span>
+                          {preset.endpoint_providers && (
+                            <span>
+                              {
+                                Object.values(preset.endpoint_providers).filter(
+                                  (v) => v,
+                                ).length
+                              }{" "}
+                              个客户端路由
+                            </span>
+                          )}
                         </div>
                       </div>
                       <div className="flex gap-2 ml-4">
@@ -404,6 +442,7 @@ export const RoutingPage = forwardRef<RoutingPageRef, RoutingPageProps>(
                 loading={loading}
               />
             )}
+            {activeTab === "clients" && <ClientRouting loading={loading} />}
             {activeTab === "exclusions" && (
               <ExclusionList
                 exclusions={exclusions}

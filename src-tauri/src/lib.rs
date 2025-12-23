@@ -312,6 +312,63 @@ async fn set_default_provider(
     Ok(provider)
 }
 
+/// 获取端点 Provider 配置
+#[tauri::command]
+async fn get_endpoint_providers(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let s = state.read().await;
+    let ep = &s.config.endpoint_providers;
+    Ok(serde_json::json!({
+        "cursor": ep.cursor.clone(),
+        "claude_code": ep.claude_code.clone(),
+        "codex": ep.codex.clone(),
+        "windsurf": ep.windsurf.clone(),
+        "kiro": ep.kiro.clone(),
+        "other": ep.other.clone()
+    }))
+}
+
+/// 设置端点 Provider 配置
+#[tauri::command]
+async fn set_endpoint_provider(
+    state: tauri::State<'_, AppState>,
+    logs: tauri::State<'_, LogState>,
+    endpoint: String,
+    provider: Option<String>,
+) -> Result<String, String> {
+    // 验证 provider（如果提供）
+    if let Some(ref p) = provider {
+        if !p.is_empty() {
+            let _: ProviderType = p.parse().map_err(|e: String| e)?;
+        }
+    }
+
+    let mut s = state.write().await;
+
+    // 使用 set_provider 方法设置对应的 provider
+    if !s
+        .config
+        .endpoint_providers
+        .set_provider(&endpoint, provider.clone())
+    {
+        return Err(format!("未知的客户端类型: {}", endpoint));
+    }
+
+    config::save_config(&s.config).map_err(|e| e.to_string())?;
+
+    let provider_display = provider.as_deref().unwrap_or("默认");
+    logs.write().await.add(
+        "info",
+        &format!(
+            "客户端 {} 的 Provider 已设置为: {}",
+            endpoint, provider_display
+        ),
+    );
+
+    Ok(provider_display.to_string())
+}
+
 #[tauri::command]
 async fn refresh_kiro_token(
     state: tauri::State<'_, AppState>,
@@ -1637,6 +1694,31 @@ pub fn run() {
         .manage(bookmark_manager_state)
         .manage(enhanced_stats_service_state)
         .manage(batch_operations_state)
+        .on_window_event(move |window, event| {
+            // 处理窗口关闭事件
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // 获取配置，检查是否启用最小化到托盘
+                let app_handle = window.app_handle();
+                if let Some(app_state) = app_handle.try_state::<AppState>() {
+                    // 使用 block_on 同步获取配置
+                    let minimize_to_tray = tauri::async_runtime::block_on(async {
+                        let state = app_state.read().await;
+                        state.config.minimize_to_tray
+                    });
+
+                    if minimize_to_tray {
+                        // 阻止默认关闭行为
+                        api.prevent_close();
+                        // 隐藏窗口而不是关闭
+                        if let Err(e) = window.hide() {
+                            tracing::error!("[窗口] 隐藏窗口失败: {}", e);
+                        } else {
+                            tracing::info!("[窗口] 窗口已最小化到托盘");
+                        }
+                    }
+                }
+            }
+        })
         .setup(move |app| {
             // 初始化托盘管理器
             // Requirements 1.4: 应用启动时显示停止状态图标
@@ -1761,6 +1843,8 @@ pub fn run() {
             save_config,
             get_default_provider,
             set_default_provider,
+            get_endpoint_providers,
+            set_endpoint_provider,
             // Unified OAuth commands (new)
             commands::oauth_cmd::get_oauth_credentials,
             commands::oauth_cmd::reload_oauth_credentials,

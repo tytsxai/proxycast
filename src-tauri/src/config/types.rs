@@ -166,6 +166,98 @@ fn default_auth_dir() -> String {
     "~/.proxycast/auth".to_string()
 }
 
+/// 端点 Provider 配置
+///
+/// 允许为不同的客户端端点配置不同的 Provider
+/// 例如：Cursor 使用 Qwen，Claude Code 使用 Kiro，Codex 使用 Codex
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct EndpointProvidersConfig {
+    /// Cursor 客户端使用的 Provider
+    /// 如果为空，则使用 default_provider
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    /// Claude Code 客户端使用的 Provider
+    /// 如果为空，则使用 default_provider
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_code: Option<String>,
+    /// Codex 客户端使用的 Provider
+    /// 如果为空，则使用 default_provider
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex: Option<String>,
+    /// Windsurf 客户端使用的 Provider
+    /// 如果为空，则使用 default_provider
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub windsurf: Option<String>,
+    /// Kiro 客户端使用的 Provider
+    /// 如果为空，则使用 default_provider
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kiro: Option<String>,
+    /// 其他客户端使用的 Provider
+    /// 如果为空，则使用 default_provider
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub other: Option<String>,
+}
+
+impl EndpointProvidersConfig {
+    /// 根据客户端类型获取配置的 Provider
+    ///
+    /// # 参数
+    /// - `client_type`: 客户端类型的配置键名（cursor, claude_code, codex, windsurf, kiro, other）
+    ///
+    /// # 返回
+    /// 如果配置了对应的 Provider，返回 Some(&String)；否则返回 None
+    pub fn get_provider(&self, client_type: &str) -> Option<&String> {
+        match client_type {
+            "cursor" => self.cursor.as_ref(),
+            "claude_code" => self.claude_code.as_ref(),
+            "codex" => self.codex.as_ref(),
+            "windsurf" => self.windsurf.as_ref(),
+            "kiro" => self.kiro.as_ref(),
+            "other" => self.other.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// 设置客户端类型的 Provider
+    ///
+    /// # 参数
+    /// - `client_type`: 客户端类型的配置键名（cursor, claude_code, codex, windsurf, kiro, other）
+    /// - `provider`: 要设置的 Provider 名称，None 或空字符串表示清除配置
+    ///
+    /// # 返回
+    /// 如果客户端类型有效，返回 true；否则返回 false
+    pub fn set_provider(&mut self, client_type: &str, provider: Option<String>) -> bool {
+        let provider = provider.filter(|p| !p.is_empty());
+        match client_type {
+            "cursor" => {
+                self.cursor = provider;
+                true
+            }
+            "claude_code" => {
+                self.claude_code = provider;
+                true
+            }
+            "codex" => {
+                self.codex = provider;
+                true
+            }
+            "windsurf" => {
+                self.windsurf = provider;
+                true
+            }
+            "kiro" => {
+                self.kiro = provider;
+                true
+            }
+            "other" => {
+                self.other = provider;
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
 /// 主配置结构
 ///
 /// 支持两种格式：
@@ -212,6 +304,17 @@ pub struct Config {
     /// Amp CLI 配置
     #[serde(default)]
     pub ampcode: AmpConfig,
+    /// 端点 Provider 配置
+    /// 允许为不同的客户端端点（CC/Codex）配置不同的 Provider
+    #[serde(default)]
+    pub endpoint_providers: EndpointProvidersConfig,
+    /// 关闭时最小化到托盘（而不是退出应用）
+    #[serde(default = "default_minimize_to_tray")]
+    pub minimize_to_tray: bool,
+}
+
+fn default_minimize_to_tray() -> bool {
+    true
 }
 
 /// 服务器配置
@@ -674,6 +777,8 @@ impl Default for Config {
             quota_exceeded: QuotaExceededConfig::default(),
             proxy_url: None,
             ampcode: AmpConfig::default(),
+            endpoint_providers: EndpointProvidersConfig::default(),
+            minimize_to_tray: default_minimize_to_tray(),
         }
     }
 }
@@ -833,5 +938,126 @@ mod unit_tests {
         assert!(config.rules.is_empty());
         assert!(config.model_aliases.is_empty());
         assert!(config.exclusions.is_empty());
+    }
+
+    #[test]
+    fn test_endpoint_providers_config_default() {
+        let config = EndpointProvidersConfig::default();
+        assert!(config.cursor.is_none());
+        assert!(config.claude_code.is_none());
+        assert!(config.codex.is_none());
+        assert!(config.windsurf.is_none());
+        assert!(config.kiro.is_none());
+        assert!(config.other.is_none());
+    }
+
+    #[test]
+    fn test_endpoint_providers_config_get_provider() {
+        let config = EndpointProvidersConfig {
+            cursor: Some("qwen".to_string()),
+            claude_code: Some("kiro".to_string()),
+            codex: Some("codex".to_string()),
+            windsurf: None,
+            kiro: Some("gemini".to_string()),
+            other: None,
+        };
+
+        assert_eq!(config.get_provider("cursor"), Some(&"qwen".to_string()));
+        assert_eq!(
+            config.get_provider("claude_code"),
+            Some(&"kiro".to_string())
+        );
+        assert_eq!(config.get_provider("codex"), Some(&"codex".to_string()));
+        assert_eq!(config.get_provider("windsurf"), None);
+        assert_eq!(config.get_provider("kiro"), Some(&"gemini".to_string()));
+        assert_eq!(config.get_provider("other"), None);
+        assert_eq!(config.get_provider("invalid"), None);
+    }
+
+    #[test]
+    fn test_endpoint_providers_config_set_provider() {
+        let mut config = EndpointProvidersConfig::default();
+
+        // 设置有效的客户端类型
+        assert!(config.set_provider("cursor", Some("qwen".to_string())));
+        assert_eq!(config.cursor, Some("qwen".to_string()));
+
+        assert!(config.set_provider("claude_code", Some("kiro".to_string())));
+        assert_eq!(config.claude_code, Some("kiro".to_string()));
+
+        assert!(config.set_provider("codex", Some("codex".to_string())));
+        assert_eq!(config.codex, Some("codex".to_string()));
+
+        assert!(config.set_provider("windsurf", Some("gemini".to_string())));
+        assert_eq!(config.windsurf, Some("gemini".to_string()));
+
+        assert!(config.set_provider("kiro", Some("openai".to_string())));
+        assert_eq!(config.kiro, Some("openai".to_string()));
+
+        assert!(config.set_provider("other", Some("claude".to_string())));
+        assert_eq!(config.other, Some("claude".to_string()));
+
+        // 设置无效的客户端类型
+        assert!(!config.set_provider("invalid", Some("test".to_string())));
+    }
+
+    #[test]
+    fn test_endpoint_providers_config_set_provider_clear() {
+        let mut config = EndpointProvidersConfig {
+            cursor: Some("qwen".to_string()),
+            claude_code: Some("kiro".to_string()),
+            codex: None,
+            windsurf: None,
+            kiro: None,
+            other: None,
+        };
+
+        // 使用 None 清除配置
+        assert!(config.set_provider("cursor", None));
+        assert_eq!(config.cursor, None);
+
+        // 使用空字符串清除配置
+        assert!(config.set_provider("claude_code", Some("".to_string())));
+        assert_eq!(config.claude_code, None);
+    }
+
+    #[test]
+    fn test_endpoint_providers_config_serialization() {
+        let config = EndpointProvidersConfig {
+            cursor: Some("qwen".to_string()),
+            claude_code: Some("kiro".to_string()),
+            codex: None,
+            windsurf: None,
+            kiro: None,
+            other: None,
+        };
+
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        assert!(yaml.contains("cursor: qwen"));
+        assert!(yaml.contains("claude_code: kiro"));
+        // None 值应该被跳过
+        assert!(!yaml.contains("codex"));
+        assert!(!yaml.contains("windsurf"));
+        assert!(!yaml.contains("kiro:"));
+        assert!(!yaml.contains("other"));
+
+        let parsed: EndpointProvidersConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed, config);
+    }
+
+    #[test]
+    fn test_endpoint_providers_config_json_serialization() {
+        let config = EndpointProvidersConfig {
+            cursor: Some("qwen".to_string()),
+            claude_code: None,
+            codex: Some("codex".to_string()),
+            windsurf: None,
+            kiro: None,
+            other: Some("openai".to_string()),
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: EndpointProvidersConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, config);
     }
 }

@@ -20,6 +20,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use futures::StreamExt;
 
 use crate::converter::anthropic_to_openai::convert_anthropic_to_openai;
 use crate::converter::openai_to_antigravity::{
@@ -42,7 +43,6 @@ use crate::streaming::{
     StreamConfig, StreamContext, StreamError, StreamFormat as StreamingFormat, StreamManager,
     StreamResponse,
 };
-use futures::StreamExt;
 
 // ============================================================================
 // OpenAI <-> Anthropic/Codex 辅助转换

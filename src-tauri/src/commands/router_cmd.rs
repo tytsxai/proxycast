@@ -186,6 +186,26 @@ pub struct RecommendedPreset {
     pub description: String,
     pub aliases: Vec<ModelAlias>,
     pub rules: Vec<RoutingRuleDto>,
+    /// 客户端路由配置
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_providers: Option<EndpointProvidersConfigDto>,
+}
+
+/// 端点 Provider 配置 DTO
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EndpointProvidersConfigDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub windsurf: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kiro: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub other: Option<String>,
 }
 
 /// 获取推荐配置列表
@@ -260,6 +280,7 @@ pub async fn get_recommended_presets() -> Result<Vec<RecommendedPreset>, String>
                     enabled: true,
                 },
             ],
+            endpoint_providers: None,
         },
         RecommendedPreset {
             id: "gemini-optimized".to_string(),
@@ -308,6 +329,7 @@ pub async fn get_recommended_presets() -> Result<Vec<RecommendedPreset>, String>
                     enabled: true,
                 },
             ],
+            endpoint_providers: None,
         },
         RecommendedPreset {
             id: "multi-provider".to_string(),
@@ -398,6 +420,7 @@ pub async fn get_recommended_presets() -> Result<Vec<RecommendedPreset>, String>
                     enabled: true,
                 },
             ],
+            endpoint_providers: None,
         },
         RecommendedPreset {
             id: "coding-assistant".to_string(),
@@ -443,6 +466,7 @@ pub async fn get_recommended_presets() -> Result<Vec<RecommendedPreset>, String>
                     enabled: true,
                 },
             ],
+            endpoint_providers: None,
         },
         RecommendedPreset {
             id: "cost-effective".to_string(),
@@ -478,6 +502,24 @@ pub async fn get_recommended_presets() -> Result<Vec<RecommendedPreset>, String>
                     enabled: true,
                 },
             ],
+            endpoint_providers: None,
+        },
+        // 客户端路由预设
+        RecommendedPreset {
+            id: "client-routing".to_string(),
+            name: "客户端路由配置".to_string(),
+            description: "为不同的 IDE 客户端配置不同的 Provider，Cursor/Windsurf 使用 Kiro，Claude Code 使用 Kiro，Codex 使用 OpenAI"
+                .to_string(),
+            aliases: vec![],
+            rules: vec![],
+            endpoint_providers: Some(EndpointProvidersConfigDto {
+                cursor: Some("kiro".to_string()),
+                claude_code: Some("kiro".to_string()),
+                codex: Some("openai".to_string()),
+                windsurf: Some("kiro".to_string()),
+                kiro: Some("kiro".to_string()),
+                other: None,
+            }),
         },
     ])
 }

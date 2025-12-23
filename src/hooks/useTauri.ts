@@ -146,6 +146,8 @@ export interface Config {
   ampcode: AmpConfig;
   credential_pool: CredentialPoolConfig;
   proxy_url: string | null;
+  /** 关闭时最小化到托盘（而不是退出应用） */
+  minimize_to_tray: boolean;
 }
 
 export interface LogEntry {
@@ -419,4 +421,46 @@ export async function checkApiCompatibility(
   provider: string,
 ): Promise<ApiCompatibilityResult> {
   return invoke("check_api_compatibility", { provider });
+}
+
+// ============ Endpoint Provider Configuration ============
+
+/**
+ * 端点 Provider 配置
+ * 为不同客户端类型配置不同的 LLM Provider
+ */
+export interface EndpointProvidersConfig {
+  /** Cursor 客户端使用的 Provider */
+  cursor?: string | null;
+  /** Claude Code 客户端使用的 Provider */
+  claude_code?: string | null;
+  /** Codex 客户端使用的 Provider */
+  codex?: string | null;
+  /** Windsurf 客户端使用的 Provider */
+  windsurf?: string | null;
+  /** Kiro 客户端使用的 Provider */
+  kiro?: string | null;
+  /** 其他客户端使用的 Provider */
+  other?: string | null;
+}
+
+/**
+ * 获取端点 Provider 配置
+ * @returns 端点 Provider 配置对象
+ */
+export async function getEndpointProviders(): Promise<EndpointProvidersConfig> {
+  return invoke("get_endpoint_providers");
+}
+
+/**
+ * 设置端点 Provider 配置
+ * @param clientType 客户端类型 (cursor, claude_code, codex, windsurf, kiro, other)
+ * @param provider Provider 名称，传 null 表示使用默认 Provider
+ * @returns 设置后的 Provider 名称
+ */
+export async function setEndpointProvider(
+  clientType: string,
+  provider: string | null,
+): Promise<string> {
+  return invoke("set_endpoint_provider", { endpoint: clientType, provider });
 }

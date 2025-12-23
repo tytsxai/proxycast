@@ -1,7 +1,10 @@
 //! HTTP API 服务器
+
+pub mod client_detector;
+
 use crate::config::{
-    Config, ConfigChangeEvent, ConfigChangeKind, ConfigManager, FileWatcher, HotReloadManager,
-    ReloadResult,
+    Config, ConfigChangeEvent, ConfigChangeKind, ConfigManager, EndpointProvidersConfig,
+    FileWatcher, HotReloadManager, ReloadResult,
 };
 use crate::converter::anthropic_to_openai::convert_anthropic_to_openai;
 use crate::credential::CredentialSyncService;
@@ -381,6 +384,8 @@ pub struct AppState {
     pub flow_monitor: Arc<FlowMonitor>,
     /// Flow 拦截器
     pub flow_interceptor: Arc<FlowInterceptor>,
+    /// 端点 Provider 配置
+    pub endpoint_providers: Arc<RwLock<EndpointProvidersConfig>>,
 }
 
 /// 启动配置文件监控
@@ -721,6 +726,14 @@ async fn run_server(
     let flow_interceptor =
         shared_flow_interceptor.unwrap_or_else(|| Arc::new(FlowInterceptor::default()));
 
+    // 初始化端点 Provider 配置
+    let endpoint_providers = Arc::new(RwLock::new(
+        config
+            .as_ref()
+            .map(|c| c.endpoint_providers.clone())
+            .unwrap_or_default(),
+    ));
+
     let state = AppState {
         api_key: api_key.to_string(),
         base_url,
@@ -743,6 +756,7 @@ async fn run_server(
         amp_router,
         flow_monitor,
         flow_interceptor,
+        endpoint_providers,
     };
 
     // 启动配置文件监控

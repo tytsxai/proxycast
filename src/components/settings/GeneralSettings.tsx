@@ -38,6 +38,8 @@ export function GeneralSettings() {
       const c = await getConfig();
       setConfig(c);
       setProxyUrl(c.proxy_url || "");
+      // 加载最小化到托盘设置
+      setMinimizeToTray(c.minimize_to_tray ?? true);
     } catch (e) {
       console.error("加载配置失败:", e);
     } finally {
@@ -248,7 +250,20 @@ export function GeneralSettings() {
             <input
               type="checkbox"
               checked={minimizeToTray}
-              onChange={(e) => setMinimizeToTray(e.target.checked)}
+              onChange={async (e) => {
+                const newValue = e.target.checked;
+                setMinimizeToTray(newValue);
+                if (config) {
+                  try {
+                    await saveConfig({ ...config, minimize_to_tray: newValue });
+                    setConfig({ ...config, minimize_to_tray: newValue });
+                  } catch (err) {
+                    console.error("保存最小化到托盘设置失败:", err);
+                    // 恢复原值
+                    setMinimizeToTray(!newValue);
+                  }
+                }
+              }}
               className="w-4 h-4 rounded border-gray-300"
             />
           </label>

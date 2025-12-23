@@ -36,6 +36,14 @@ export interface RecommendedPreset {
   description: string;
   aliases: ModelAlias[];
   rules: RoutingRule[];
+  endpoint_providers?: {
+    cursor?: string;
+    claude_code?: string;
+    codex?: string;
+    windsurf?: string;
+    kiro?: string;
+    other?: string;
+  };
 }
 
 // Router configuration

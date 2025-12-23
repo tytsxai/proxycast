@@ -217,6 +217,8 @@ fn arb_config() -> impl Strategy<Value = Config> {
             quota_exceeded: crate::config::QuotaExceededConfig::default(),
             proxy_url: None,
             ampcode: crate::config::AmpConfig::default(),
+            endpoint_providers: crate::config::EndpointProvidersConfig::default(),
+            minimize_to_tray: true,
         })
 }
 
@@ -488,6 +490,8 @@ fn arb_valid_config() -> impl Strategy<Value = Config> {
             quota_exceeded: crate::config::QuotaExceededConfig::default(),
             proxy_url: None,
             ampcode: crate::config::AmpConfig::default(),
+            endpoint_providers: crate::config::EndpointProvidersConfig::default(),
+            minimize_to_tray: true,
         })
 }
 
@@ -531,6 +535,8 @@ fn arb_invalid_config() -> impl Strategy<Value = Config> {
                     quota_exceeded: crate::config::QuotaExceededConfig::default(),
                     proxy_url: None,
                     ampcode: crate::config::AmpConfig::default(),
+                    endpoint_providers: crate::config::EndpointProvidersConfig::default(),
+                    minimize_to_tray: true,
                 };
                 // 根据类型使配置无效
                 match invalid_type {
@@ -2468,5 +2474,353 @@ proptest! {
                 "Vertex AI 模型别名数量往返不一致"
             );
         }
+    }
+}
+
+// ============================================================================
+// Property 3: EndpointProvidersConfig 序列化往返一致性
+// ============================================================================
+
+use crate::config::EndpointProvidersConfig;
+
+/// 生成随机的 Provider 名称
+fn arb_provider_name() -> impl Strategy<Value = String> {
+    prop_oneof![
+        Just("kiro".to_string()),
+        Just("gemini".to_string()),
+        Just("qwen".to_string()),
+        Just("openai".to_string()),
+        Just("claude".to_string()),
+        Just("codex".to_string()),
+        Just("iflow".to_string()),
+    ]
+}
+
+/// 生成随机的可选 Provider 名称
+fn arb_optional_provider() -> impl Strategy<Value = Option<String>> {
+    proptest::option::of(arb_provider_name())
+}
+
+/// 生成随机的 EndpointProvidersConfig
+fn arb_endpoint_providers_config() -> impl Strategy<Value = EndpointProvidersConfig> {
+    (
+        arb_optional_provider(),
+        arb_optional_provider(),
+        arb_optional_provider(),
+        arb_optional_provider(),
+        arb_optional_provider(),
+        arb_optional_provider(),
+    )
+        .prop_map(|(cursor, claude_code, codex, windsurf, kiro, other)| {
+            EndpointProvidersConfig {
+                cursor,
+                claude_code,
+                codex,
+                windsurf,
+                kiro,
+                other,
+            }
+        })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    /// **Feature: endpoint-provider-config, Property 3: 配置序列化往返一致性**
+    /// *对于任意* 有效的 EndpointProvidersConfig 对象，序列化后再反序列化应产生等价的对象。
+    /// **Validates: Requirements 1.1**
+    #[test]
+    fn prop_endpoint_providers_config_yaml_roundtrip(config in arb_endpoint_providers_config()) {
+        // 序列化为 YAML
+        let yaml = serde_yaml::to_string(&config)
+            .expect("YAML 序列化应成功");
+
+        // 反序列化回 EndpointProvidersConfig
+        let parsed: EndpointProvidersConfig = serde_yaml::from_str(&yaml)
+            .expect("YAML 反序列化应成功");
+
+        // 验证往返一致性
+        prop_assert_eq!(
+            config.cursor,
+            parsed.cursor,
+            "cursor 字段往返不一致"
+        );
+        prop_assert_eq!(
+            config.claude_code,
+            parsed.claude_code,
+            "claude_code 字段往返不一致"
+        );
+        prop_assert_eq!(
+            config.codex,
+            parsed.codex,
+            "codex 字段往返不一致"
+        );
+        prop_assert_eq!(
+            config.windsurf,
+            parsed.windsurf,
+            "windsurf 字段往返不一致"
+        );
+        prop_assert_eq!(
+            config.kiro,
+            parsed.kiro,
+            "kiro 字段往返不一致"
+        );
+        prop_assert_eq!(
+            config.other,
+            parsed.other,
+            "other 字段往返不一致"
+        );
+    }
+
+    /// **Feature: endpoint-provider-config, Property 3: 配置序列化往返一致性（JSON）**
+    /// *对于任意* 有效的 EndpointProvidersConfig 对象，JSON 序列化后再反序列化应产生等价的对象。
+    /// **Validates: Requirements 1.1**
+    #[test]
+    fn prop_endpoint_providers_config_json_roundtrip(config in arb_endpoint_providers_config()) {
+        // 序列化为 JSON
+        let json = serde_json::to_string(&config)
+            .expect("JSON 序列化应成功");
+
+        // 反序列化回 EndpointProvidersConfig
+        let parsed: EndpointProvidersConfig = serde_json::from_str(&json)
+            .expect("JSON 反序列化应成功");
+
+        // 验证往返一致性
+        prop_assert_eq!(
+            config,
+            parsed,
+            "EndpointProvidersConfig JSON 往返不一致"
+        );
+    }
+
+    /// **Feature: endpoint-provider-config, Property 3: 配置序列化往返一致性（完整配置）**
+    /// *对于任意* 包含 EndpointProvidersConfig 的完整配置，序列化后再反序列化应保持 endpoint_providers 一致。
+    /// **Validates: Requirements 1.1**
+    #[test]
+    fn prop_config_with_endpoint_providers_roundtrip(
+        endpoint_providers in arb_endpoint_providers_config()
+    ) {
+        // 创建包含 endpoint_providers 的完整配置
+        let config = Config {
+            endpoint_providers: endpoint_providers.clone(),
+            ..Config::default()
+        };
+
+        // 序列化为 YAML
+        let yaml = ConfigManager::to_yaml(&config)
+            .expect("序列化应成功");
+
+        // 反序列化回 Config
+        let parsed = ConfigManager::parse_yaml(&yaml)
+            .expect("反序列化应成功");
+
+        // 验证 endpoint_providers 往返一致性
+        prop_assert_eq!(
+            endpoint_providers,
+            parsed.endpoint_providers,
+            "endpoint_providers 往返不一致"
+        );
+    }
+}
+
+// ============================================================================
+// Property 4: Provider 类型验证
+// ============================================================================
+
+use crate::ProviderType;
+
+/// 生成有效的 Provider 类型字符串
+fn arb_valid_provider_type() -> impl Strategy<Value = String> {
+    prop_oneof![
+        Just("kiro".to_string()),
+        Just("gemini".to_string()),
+        Just("qwen".to_string()),
+        Just("openai".to_string()),
+        Just("claude".to_string()),
+        Just("antigravity".to_string()),
+        Just("vertex".to_string()),
+        Just("gemini_api_key".to_string()),
+        Just("codex".to_string()),
+        Just("claude_oauth".to_string()),
+        Just("iflow".to_string()),
+    ]
+}
+
+/// 生成无效的 Provider 类型字符串
+fn arb_invalid_provider_type() -> impl Strategy<Value = String> {
+    // 生成不在有效列表中的字符串
+    "[a-z]{3,15}".prop_filter("排除有效的 Provider 类型", |s| {
+        !matches!(
+            s.as_str(),
+            "kiro"
+                | "gemini"
+                | "qwen"
+                | "openai"
+                | "claude"
+                | "antigravity"
+                | "vertex"
+                | "gemini_api_key"
+                | "codex"
+                | "claude_oauth"
+                | "iflow"
+        )
+    })
+}
+
+/// 生成有效的客户端类型字符串
+fn arb_valid_client_type() -> impl Strategy<Value = String> {
+    prop_oneof![
+        Just("cursor".to_string()),
+        Just("claude_code".to_string()),
+        Just("codex".to_string()),
+        Just("windsurf".to_string()),
+        Just("kiro".to_string()),
+        Just("other".to_string()),
+    ]
+}
+
+/// 生成无效的客户端类型字符串
+fn arb_invalid_client_type() -> impl Strategy<Value = String> {
+    // 生成不在有效列表中的字符串
+    "[a-z]{3,15}".prop_filter("排除有效的客户端类型", |s| {
+        !matches!(
+            s.as_str(),
+            "cursor" | "claude_code" | "codex" | "windsurf" | "kiro" | "other"
+        )
+    })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    /// **Feature: endpoint-provider-config, Property 4: Provider 类型验证**
+    /// *对于任意* 有效的 Provider 类型字符串，解析应成功并返回正确的 ProviderType。
+    /// **Validates: Requirements 5.1, 5.2**
+    #[test]
+    fn prop_valid_provider_type_parsing(provider in arb_valid_provider_type()) {
+        // 解析 Provider 类型
+        let result: Result<ProviderType, String> = provider.parse();
+
+        // 验证解析成功
+        prop_assert!(
+            result.is_ok(),
+            "有效的 Provider 类型应解析成功: {}",
+            provider
+        );
+
+        // 验证往返一致性
+        let parsed = result.unwrap();
+        prop_assert_eq!(
+            parsed.to_string(),
+            provider,
+            "Provider 类型往返不一致"
+        );
+    }
+
+    /// **Feature: endpoint-provider-config, Property 4: Provider 类型验证**
+    /// *对于任意* 无效的 Provider 类型字符串，解析应失败并返回描述性错误消息。
+    /// **Validates: Requirements 5.1, 5.2**
+    #[test]
+    fn prop_invalid_provider_type_parsing(provider in arb_invalid_provider_type()) {
+        // 解析 Provider 类型
+        let result: Result<ProviderType, String> = provider.parse();
+
+        // 验证解析失败
+        prop_assert!(
+            result.is_err(),
+            "无效的 Provider 类型应解析失败: {}",
+            provider
+        );
+
+        // 验证错误消息包含描述性信息
+        let error = result.unwrap_err();
+        prop_assert!(
+            error.contains("Invalid provider") || error.contains(&provider),
+            "错误消息应包含描述性信息: {}",
+            error
+        );
+    }
+
+    /// **Feature: endpoint-provider-config, Property 4: Provider 类型验证**
+    /// *对于任意* 有效的客户端类型，set_provider 应成功设置 Provider。
+    /// **Validates: Requirements 5.1, 5.2**
+    #[test]
+    fn prop_valid_client_type_set_provider(
+        client_type in arb_valid_client_type(),
+        provider in arb_valid_provider_type()
+    ) {
+        let mut config = EndpointProvidersConfig::default();
+
+        // 设置 Provider
+        let result = config.set_provider(&client_type, Some(provider.clone()));
+
+        // 验证设置成功
+        prop_assert!(
+            result,
+            "有效的客户端类型应设置成功: {}",
+            client_type
+        );
+
+        // 验证 Provider 已正确设置
+        let stored = config.get_provider(&client_type);
+        prop_assert_eq!(
+            stored,
+            Some(&provider),
+            "Provider 应正确存储"
+        );
+    }
+
+    /// **Feature: endpoint-provider-config, Property 4: Provider 类型验证**
+    /// *对于任意* 无效的客户端类型，set_provider 应返回 false。
+    /// **Validates: Requirements 5.1, 5.2**
+    #[test]
+    fn prop_invalid_client_type_set_provider(
+        client_type in arb_invalid_client_type(),
+        provider in arb_valid_provider_type()
+    ) {
+        let mut config = EndpointProvidersConfig::default();
+
+        // 设置 Provider
+        let result = config.set_provider(&client_type, Some(provider));
+
+        // 验证设置失败
+        prop_assert!(
+            !result,
+            "无效的客户端类型应设置失败: {}",
+            client_type
+        );
+    }
+
+    /// **Feature: endpoint-provider-config, Property 4: Provider 类型验证**
+    /// *对于任意* 有效的客户端类型，使用 None 或空字符串应清除 Provider 配置。
+    /// **Validates: Requirements 5.1, 5.2**
+    #[test]
+    fn prop_clear_provider_config(
+        client_type in arb_valid_client_type(),
+        provider in arb_valid_provider_type()
+    ) {
+        let mut config = EndpointProvidersConfig::default();
+
+        // 先设置 Provider
+        config.set_provider(&client_type, Some(provider));
+
+        // 使用 None 清除
+        let result = config.set_provider(&client_type, None);
+        prop_assert!(result, "清除操作应成功");
+        prop_assert_eq!(
+            config.get_provider(&client_type),
+            None,
+            "Provider 应被清除"
+        );
+
+        // 重新设置后使用空字符串清除
+        config.set_provider(&client_type, Some("kiro".to_string()));
+        let result = config.set_provider(&client_type, Some("".to_string()));
+        prop_assert!(result, "空字符串清除操作应成功");
+        prop_assert_eq!(
+            config.get_provider(&client_type),
+            None,
+            "Provider 应被清除（空字符串）"
+        );
     }
 }

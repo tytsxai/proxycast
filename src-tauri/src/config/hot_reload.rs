@@ -5,7 +5,7 @@
 //! - 支持原子性配置更新
 //! - 失败时自动回滚到之前的配置
 
-use super::types::Config;
+use super::types::{is_default_api_key, Config};
 use super::yaml::ConfigManager;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::RwLock;
@@ -414,7 +414,7 @@ impl HotReloadManager {
         }
 
         if (!is_localhost || config.remote_management.allow_remote)
-            && crate::config::is_default_api_key(&config.server.api_key)
+            && is_default_api_key(&config.server.api_key)
         {
             return Err(HotReloadError::ValidationError(
                 "非本地访问场景下禁止使用默认 API Key，请设置强口令".to_string(),

@@ -1587,6 +1587,21 @@ mod tests {
             creds2.api_base_url,
             Some("https://example.com/v1".to_string())
         );
+
+        // 测试 OPENAI_API_KEY 字段名（Codex CLI 格式）
+        let json3 = r#"{
+            "OPENAI_API_KEY": "DTFXFDZC-8ZZG-KQ7Q-SCR0-MJCFUGEJNDNM",
+            "api_base_url": "https://yunyi.cfd/codex"
+        }"#;
+        let creds3: CodexCredentials = serde_json::from_str(json3).unwrap();
+        assert_eq!(
+            creds3.api_key,
+            Some("DTFXFDZC-8ZZG-KQ7Q-SCR0-MJCFUGEJNDNM".to_string())
+        );
+        assert_eq!(
+            creds3.api_base_url,
+            Some("https://yunyi.cfd/codex".to_string())
+        );
     }
 
     #[test]

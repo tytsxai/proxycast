@@ -20,6 +20,7 @@ import {
   Fingerprint,
   Copy,
   Check,
+  Timer,
 } from "lucide-react";
 import type {
   CredentialDisplay,
@@ -191,7 +192,7 @@ export function CredentialCard({
 
   return (
     <div
-      className={`rounded-xl border p-4 transition-all hover:shadow-md ${
+      className={`rounded-xl border transition-all hover:shadow-md ${
         credential.is_disabled
           ? "border-gray-200 bg-gray-50/80 opacity-70 dark:border-gray-700 dark:bg-gray-900/60"
           : isHealthy
@@ -199,10 +200,11 @@ export function CredentialCard({
             : "border-red-200 bg-gradient-to-r from-red-50/80 to-white dark:border-red-800 dark:bg-gradient-to-r dark:from-red-950/40 dark:to-transparent"
       }`}
     >
-      <div className="flex items-center gap-4">
+      {/* 第一行：状态图标 + 名称 + 标签 + 操作按钮 */}
+      <div className="flex items-center gap-4 p-4 pb-3">
         {/* Status Icon */}
         <div
-          className={`shrink-0 rounded-full p-2.5 ${
+          className={`shrink-0 rounded-full p-3 ${
             credential.is_disabled
               ? "bg-gray-100 dark:bg-gray-800"
               : isHealthy
@@ -211,92 +213,46 @@ export function CredentialCard({
           }`}
         >
           {credential.is_disabled ? (
-            <PowerOff className="h-5 w-5 text-gray-400" />
+            <PowerOff className="h-6 w-6 text-gray-400" />
           ) : isHealthy ? (
-            <Heart className="h-5 w-5 text-green-600 dark:text-green-400" />
+            <Heart className="h-6 w-6 text-green-600 dark:text-green-400" />
           ) : (
-            <HeartOff className="h-5 w-5 text-red-600 dark:text-red-400" />
+            <HeartOff className="h-6 w-6 text-red-600 dark:text-red-400" />
           )}
         </div>
 
         {/* Main Info */}
         <div className="flex-1 min-w-0">
-          <div className="flex flex-col gap-1.5 mb-1">
-            <h4 className="font-semibold text-base truncate">
-              {credential.name || `凭证 #${credential.uuid.slice(0, 8)}`}
-            </h4>
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium">
-                {getCredentialTypeLabel(credential.credential_type)}
-              </span>
+          <h4 className="font-semibold text-lg truncate">
+            {credential.name || `凭证 #${credential.uuid.slice(0, 8)}`}
+          </h4>
+          <div className="flex flex-wrap items-center gap-2 mt-1.5">
+            <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium">
+              {getCredentialTypeLabel(credential.credential_type)}
+            </span>
+            <span
+              className={`rounded-full px-2.5 py-1 text-xs font-medium inline-flex items-center gap-1.5 whitespace-nowrap ${sourceInfo.color}`}
+            >
+              <SourceIcon className="h-3 w-3 shrink-0" />
+              {sourceInfo.text}
+            </span>
+            {credential.proxy_url && (
               <span
-                className={`rounded-full px-2 py-0.5 text-xs font-medium inline-flex items-center gap-1 whitespace-nowrap ${sourceInfo.color}`}
+                className="rounded-full px-2.5 py-1 text-xs font-medium inline-flex items-center gap-1.5 whitespace-nowrap bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400"
+                title={`代理: ${credential.proxy_url}`}
               >
-                <SourceIcon className="h-3 w-3 shrink-0" />
-                {sourceInfo.text}
+                <Globe className="h-3 w-3 shrink-0" />
+                代理
               </span>
-              {credential.proxy_url && (
-                <span
-                  className="rounded-full px-2 py-0.5 text-xs font-medium inline-flex items-center gap-1 whitespace-nowrap bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400"
-                  title={`代理: ${credential.proxy_url}`}
-                >
-                  <Globe className="h-3 w-3 shrink-0" />
-                  代理
-                </span>
-              )}
-            </div>
-          </div>
-          <p className="text-xs text-muted-foreground font-mono truncate">
-            {credential.uuid}
-          </p>
-        </div>
-
-        {/* Stats */}
-        <div className="hidden sm:flex items-center gap-6 shrink-0">
-          <div className="flex items-center gap-2">
-            <Activity className="h-4 w-4 text-blue-500" />
-            <div className="text-center">
-              <div className="text-xs text-muted-foreground">使用次数</div>
-              <div className="font-semibold">{credential.usage_count}</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <AlertTriangle
-              className={`h-4 w-4 ${hasError ? "text-yellow-500" : "text-green-500"}`}
-            />
-            <div className="text-center">
-              <div className="text-xs text-muted-foreground">错误次数</div>
-              <div className="font-semibold">{credential.error_count}</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 text-muted-foreground">
-            <Clock className="h-4 w-4" />
-            <div>
-              <div className="text-xs">最后使用</div>
-              <div className="text-xs font-medium">
-                {formatDate(credential.last_used)}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Health Check Info */}
-        {credential.last_health_check_time && (
-          <div className="hidden lg:block shrink-0 text-xs text-muted-foreground border-l pl-4">
-            <div>检查: {formatDate(credential.last_health_check_time)}</div>
-            {credential.last_health_check_model && (
-              <div className="text-primary">
-                ({credential.last_health_check_model})
-              </div>
             )}
           </div>
-        )}
+        </div>
 
         {/* Actions */}
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={onToggle}
-            className={`rounded-lg p-2 text-xs font-medium transition-colors ${
+            className={`rounded-lg p-2.5 text-xs font-medium transition-colors ${
               credential.is_disabled
                 ? "bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-400"
                 : "bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300"
@@ -312,7 +268,7 @@ export function CredentialCard({
 
           <button
             onClick={onEdit}
-            className="rounded-lg bg-blue-100 p-2 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/30 dark:text-blue-400 transition-colors"
+            className="rounded-lg bg-blue-100 p-2.5 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/30 dark:text-blue-400 transition-colors"
             title="编辑"
           >
             <Settings className="h-4 w-4" />
@@ -321,7 +277,7 @@ export function CredentialCard({
           <button
             onClick={onCheckHealth}
             disabled={checkingHealth}
-            className="rounded-lg bg-emerald-100 p-2 text-emerald-700 hover:bg-emerald-200 disabled:opacity-50 dark:bg-emerald-900/30 dark:text-emerald-400 transition-colors"
+            className="rounded-lg bg-emerald-100 p-2.5 text-emerald-700 hover:bg-emerald-200 disabled:opacity-50 dark:bg-emerald-900/30 dark:text-emerald-400 transition-colors"
             title="检测"
           >
             <Activity
@@ -333,7 +289,7 @@ export function CredentialCard({
             <button
               onClick={onRefreshToken}
               disabled={refreshingToken}
-              className="rounded-lg bg-purple-100 p-2 text-purple-700 hover:bg-purple-200 disabled:opacity-50 dark:bg-purple-900/30 dark:text-purple-400 transition-colors"
+              className="rounded-lg bg-purple-100 p-2.5 text-purple-700 hover:bg-purple-200 disabled:opacity-50 dark:bg-purple-900/30 dark:text-purple-400 transition-colors"
               title="刷新 Token"
             >
               <RefreshCw
@@ -347,7 +303,7 @@ export function CredentialCard({
             <button
               onClick={handleCheckFingerprint}
               disabled={fingerprintLoading}
-              className={`rounded-lg p-2 transition-colors ${
+              className={`rounded-lg p-2.5 transition-colors ${
                 fingerprintExpanded
                   ? "bg-indigo-200 text-indigo-800 dark:bg-indigo-800 dark:text-indigo-200"
                   : "bg-indigo-100 text-indigo-700 hover:bg-indigo-200 dark:bg-indigo-900/30 dark:text-indigo-400"
@@ -365,7 +321,7 @@ export function CredentialCard({
             <button
               onClick={handleCheckUsage}
               disabled={usageLoading}
-              className={`rounded-lg p-2 transition-colors ${
+              className={`rounded-lg p-2.5 transition-colors ${
                 usageExpanded
                   ? "bg-cyan-200 text-cyan-800 dark:bg-cyan-800 dark:text-cyan-200"
                   : "bg-cyan-100 text-cyan-700 hover:bg-cyan-200 dark:bg-cyan-900/30 dark:text-cyan-400"
@@ -380,7 +336,7 @@ export function CredentialCard({
 
           <button
             onClick={onReset}
-            className="rounded-lg bg-orange-100 p-2 text-orange-700 hover:bg-orange-200 dark:bg-orange-900/30 dark:text-orange-400 transition-colors"
+            className="rounded-lg bg-orange-100 p-2.5 text-orange-700 hover:bg-orange-200 dark:bg-orange-900/30 dark:text-orange-400 transition-colors"
             title="重置"
           >
             <RotateCcw className="h-4 w-4" />
@@ -389,7 +345,7 @@ export function CredentialCard({
           <button
             onClick={onDelete}
             disabled={deleting}
-            className="rounded-lg bg-red-100 p-2 text-red-700 hover:bg-red-200 disabled:opacity-50 dark:bg-red-900/30 dark:text-red-400 transition-colors"
+            className="rounded-lg bg-red-100 p-2.5 text-red-700 hover:bg-red-200 disabled:opacity-50 dark:bg-red-900/30 dark:text-red-400 transition-colors"
             title="删除"
           >
             <Trash2 className="h-4 w-4" />
@@ -397,31 +353,133 @@ export function CredentialCard({
         </div>
       </div>
 
-      {/* Mobile Stats - shown on small screens */}
-      <div className="sm:hidden mt-3 pt-3 border-t border-border/30">
-        <div className="flex items-center justify-between text-xs">
-          <div className="flex items-center gap-4">
-            <span className="flex items-center gap-1">
-              <Activity className="h-3 w-3 text-blue-500" />
-              使用: {credential.usage_count}
-            </span>
-            <span className="flex items-center gap-1">
-              <AlertTriangle
-                className={`h-3 w-3 ${hasError ? "text-yellow-500" : "text-green-500"}`}
-              />
-              错误: {credential.error_count}
-            </span>
+      {/* 第二行：统计信息 - 使用网格布局 */}
+      <div className="hidden sm:block px-4 py-3 bg-muted/30 border-t border-border/30">
+        <div className="grid grid-cols-5 gap-4">
+          {/* 使用次数 */}
+          <div className="flex items-center gap-3">
+            <Activity className="h-5 w-5 text-blue-500 shrink-0" />
+            <div>
+              <div className="text-xs text-muted-foreground">使用次数</div>
+              <div className="font-bold text-xl tabular-nums">
+                {credential.usage_count}
+              </div>
+            </div>
           </div>
-          <span className="text-muted-foreground">
-            <Clock className="h-3 w-3 inline mr-1" />
-            {formatDate(credential.last_used)}
-          </span>
+
+          {/* 错误次数 */}
+          <div className="flex items-center gap-3">
+            <AlertTriangle
+              className={`h-5 w-5 shrink-0 ${hasError ? "text-yellow-500" : "text-green-500"}`}
+            />
+            <div>
+              <div className="text-xs text-muted-foreground">错误次数</div>
+              <div className="font-bold text-xl tabular-nums">
+                {credential.error_count}
+              </div>
+            </div>
+          </div>
+
+          {/* 最后使用 */}
+          <div className="flex items-center gap-3">
+            <Clock className="h-5 w-5 text-muted-foreground shrink-0" />
+            <div>
+              <div className="text-xs text-muted-foreground">最后使用</div>
+              <div className="font-medium text-sm">
+                {formatDate(credential.last_used)}
+              </div>
+            </div>
+          </div>
+
+          {/* Token 有效期 - OAuth 凭证显示 */}
+          {isOAuth ? (
+            <div className="flex items-center gap-3">
+              <Timer
+                className={`h-5 w-5 shrink-0 ${
+                  credential.token_cache_status?.expiry_time
+                    ? credential.token_cache_status.is_expiring_soon
+                      ? "text-yellow-500"
+                      : credential.token_cache_status.is_valid
+                        ? "text-green-500"
+                        : "text-red-500"
+                    : "text-gray-400"
+                }`}
+              />
+              <div>
+                <div className="text-xs text-muted-foreground">
+                  Token 有效期
+                </div>
+                {credential.token_cache_status?.expiry_time ? (
+                  <div
+                    className={`font-medium text-sm ${
+                      credential.token_cache_status.is_expiring_soon
+                        ? "text-yellow-600 dark:text-yellow-400"
+                        : credential.token_cache_status.is_valid
+                          ? "text-green-600 dark:text-green-400"
+                          : "text-red-600 dark:text-red-400"
+                    }`}
+                  >
+                    {formatDate(credential.token_cache_status.expiry_time)}
+                  </div>
+                ) : (
+                  <div className="text-sm text-muted-foreground">--</div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div /> /* 占位 */
+          )}
+
+          {/* 健康检查 */}
+          {credential.last_health_check_time ? (
+            <div className="flex items-center gap-3">
+              <Activity className="h-5 w-5 text-emerald-500 shrink-0" />
+              <div>
+                <div className="text-xs text-muted-foreground">健康检查</div>
+                <div className="font-medium text-sm">
+                  {formatDate(credential.last_health_check_time)}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div /> /* 占位 */
+          )}
+        </div>
+      </div>
+
+      {/* 第三行：UUID */}
+      <div className="px-4 py-2 border-t border-border/30">
+        <p className="text-xs text-muted-foreground font-mono">
+          {credential.uuid}
+        </p>
+      </div>
+
+      {/* Mobile Stats - shown on small screens */}
+      <div className="sm:hidden px-4 py-3 bg-muted/30 border-t border-border/30">
+        <div className="grid grid-cols-2 gap-4">
+          <div className="flex items-center gap-2">
+            <Activity className="h-4 w-4 text-blue-500" />
+            <span className="text-xs text-muted-foreground">使用:</span>
+            <span className="font-semibold">{credential.usage_count}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <AlertTriangle
+              className={`h-4 w-4 ${hasError ? "text-yellow-500" : "text-green-500"}`}
+            />
+            <span className="text-xs text-muted-foreground">错误:</span>
+            <span className="font-semibold">{credential.error_count}</span>
+          </div>
+          <div className="flex items-center gap-2 col-span-2">
+            <Clock className="h-4 w-4 text-muted-foreground" />
+            <span className="text-xs text-muted-foreground">最后使用:</span>
+            <span className="text-sm">{formatDate(credential.last_used)}</span>
+          </div>
         </div>
       </div>
 
       {/* Error Message */}
       {credential.last_error_message && (
-        <div className="mt-3 rounded-lg bg-red-100 p-2 text-xs text-red-700 dark:bg-red-900/30 dark:text-red-300">
+        <div className="mx-4 mb-3 rounded-lg bg-red-100 p-3 text-xs text-red-700 dark:bg-red-900/30 dark:text-red-300">
           {credential.last_error_message.slice(0, 150)}
           {credential.last_error_message.length > 150 && "..."}
         </div>
@@ -429,51 +487,51 @@ export function CredentialCard({
 
       {/* 指纹信息展示区域 - 仅 Kiro 凭证 */}
       {isKiroCredential && fingerprintExpanded && (
-        <div className="mt-3 pt-3 border-t border-border/30">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">
-              <Fingerprint className="h-3 w-3" />
+        <div className="mx-4 mb-4 p-4 rounded-lg bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-sm font-medium text-indigo-700 dark:text-indigo-300 flex items-center gap-2">
+              <Fingerprint className="h-4 w-4" />
               设备指纹
             </span>
             <button
               onClick={() => setFingerprintExpanded(false)}
-              className="text-muted-foreground hover:text-foreground"
+              className="text-indigo-500 hover:text-indigo-700 dark:hover:text-indigo-300"
             >
               <ChevronUp className="h-4 w-4" />
             </button>
           </div>
 
           {fingerprintLoading ? (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <div className="animate-spin h-3 w-3 border border-current border-t-transparent rounded-full" />
+            <div className="flex items-center gap-2 text-sm text-indigo-600 dark:text-indigo-400">
+              <div className="animate-spin h-4 w-4 border-2 border-current border-t-transparent rounded-full" />
               加载中...
             </div>
           ) : fingerprintInfo ? (
-            <div className="space-y-2">
+            <div className="space-y-3">
               <div className="flex items-center gap-2">
-                <span className="text-xs text-muted-foreground">
+                <span className="text-sm text-muted-foreground">
                   Machine ID:
                 </span>
-                <code className="text-xs font-mono bg-muted px-1.5 py-0.5 rounded">
+                <code className="text-sm font-mono bg-white dark:bg-gray-800 px-2 py-1 rounded border">
                   {fingerprintInfo.machine_id_short}...
                 </code>
                 <button
                   onClick={handleCopyMachineId}
-                  className="p-1 rounded hover:bg-muted transition-colors"
+                  className="p-1.5 rounded hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors"
                   title="复制完整 Machine ID"
                 >
                   {fingerprintCopied ? (
-                    <Check className="h-3 w-3 text-green-500" />
+                    <Check className="h-4 w-4 text-green-500" />
                   ) : (
-                    <Copy className="h-3 w-3 text-muted-foreground" />
+                    <Copy className="h-4 w-4 text-muted-foreground" />
                   )}
                 </button>
               </div>
-              <div className="flex items-center gap-4 text-xs">
-                <span className="flex items-center gap-1">
+              <div className="flex items-center gap-6 text-sm">
+                <span className="flex items-center gap-2">
                   <span className="text-muted-foreground">来源:</span>
                   <span
-                    className={`px-1.5 py-0.5 rounded ${
+                    className={`px-2 py-0.5 rounded font-medium ${
                       fingerprintInfo.source === "profileArn"
                         ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
                         : fingerprintInfo.source === "clientId"
@@ -484,10 +542,10 @@ export function CredentialCard({
                     {fingerprintInfo.source}
                   </span>
                 </span>
-                <span className="flex items-center gap-1">
+                <span className="flex items-center gap-2">
                   <span className="text-muted-foreground">认证:</span>
                   <span
-                    className={`px-1.5 py-0.5 rounded ${
+                    className={`px-2 py-0.5 rounded font-medium ${
                       fingerprintInfo.auth_method.toLowerCase() === "idc"
                         ? "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
                         : "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400"
@@ -499,7 +557,7 @@ export function CredentialCard({
               </div>
             </div>
           ) : (
-            <div className="text-xs text-muted-foreground">
+            <div className="text-sm text-muted-foreground">
               无法获取指纹信息
             </div>
           )}
@@ -508,22 +566,22 @@ export function CredentialCard({
 
       {/* 用量信息展示区域 - 仅 Kiro 凭证 */}
       {isKiroCredential && usageExpanded && (
-        <div className="mt-3 pt-3 border-t border-border/30">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">
-              <BarChart3 className="h-3 w-3" />
+        <div className="mx-4 mb-4 p-4 rounded-lg bg-cyan-50 dark:bg-cyan-950/30 border border-cyan-200 dark:border-cyan-800">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-sm font-medium text-cyan-700 dark:text-cyan-300 flex items-center gap-2">
+              <BarChart3 className="h-4 w-4" />
               Kiro 用量
             </span>
             <button
               onClick={() => setUsageExpanded(false)}
-              className="text-muted-foreground hover:text-foreground"
+              className="text-cyan-500 hover:text-cyan-700 dark:hover:text-cyan-300"
             >
               <ChevronUp className="h-4 w-4" />
             </button>
           </div>
 
           {usageError ? (
-            <div className="rounded-lg bg-red-100 p-2 text-xs text-red-700 dark:bg-red-900/30 dark:text-red-300">
+            <div className="rounded-lg bg-red-100 p-3 text-sm text-red-700 dark:bg-red-900/30 dark:text-red-300">
               {usageError}
             </div>
           ) : usageInfo ? (
