@@ -35,7 +35,74 @@ impl Default for ProviderPoolService {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::ProviderPoolService;
+
+    #[test]
+    fn test_resolve_codex_health_base_url_api_key_prefers_override() {
+        let base = ProviderPoolService::resolve_codex_health_base_url(
+            true,
+            Some(" https://override.example.com "),
+            Some("https://credential.example.com"),
+            "https://codex.default",
+        );
+        assert_eq!(base.as_deref(), Some("https://override.example.com"));
+    }
+
+    #[test]
+    fn test_resolve_codex_health_base_url_api_key_fallbacks() {
+        let base = ProviderPoolService::resolve_codex_health_base_url(
+            true,
+            Some("   "),
+            Some("https://credential.example.com"),
+            "https://codex.default",
+        );
+        assert_eq!(base.as_deref(), Some("https://credential.example.com"));
+
+        let base = ProviderPoolService::resolve_codex_health_base_url(
+            true,
+            None,
+            None,
+            "https://codex.default",
+        );
+        assert!(base.is_none());
+    }
+
+    #[test]
+    fn test_resolve_codex_health_base_url_oauth_uses_codex_default() {
+        let base = ProviderPoolService::resolve_codex_health_base_url(
+            false,
+            Some("https://override.example.com"),
+            Some("https://credential.example.com"),
+            "https://codex.default",
+        );
+        assert_eq!(base.as_deref(), Some("https://codex.default"));
+    }
+}
+
 impl ProviderPoolService {
+    fn resolve_codex_health_base_url(
+        has_api_key: bool,
+        override_base_url: Option<&str>,
+        credential_base_url: Option<&str>,
+        default_codex_base_url: &str,
+    ) -> Option<String> {
+        if has_api_key {
+            override_base_url
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    credential_base_url
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                })
+                .map(|s| s.to_string())
+        } else {
+            Some(default_codex_base_url.to_string())
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             client: Client::builder()
@@ -973,6 +1040,14 @@ impl ProviderPoolService {
             .await
             .map_err(|e| format!("加载 Codex 凭证失败: {}", e))?;
 
+        let has_api_key = provider
+            .credentials
+            .api_key
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .is_some();
+
         let token = provider.ensure_valid_token().await.map_err(|e| {
             format!(
                 "获取 Codex Token 失败: 配置错误，请检查凭证设置。详情：{}",
@@ -980,20 +1055,15 @@ impl ProviderPoolService {
             )
         })?;
 
-        // 优先使用 override_base_url（来自 CredentialData），其次使用凭证文件中的配置
-        let base_url = override_base_url
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .or_else(|| {
-                provider
-                    .credentials
-                    .api_base_url
-                    .as_deref()
-                    .map(|s| s.trim())
-                    .filter(|s| !s.is_empty())
-            });
+        // OAuth 模式下强制走 Codex 官方端点，避免误用 OpenAI API base_url
+        let base_url = Self::resolve_codex_health_base_url(
+            has_api_key,
+            override_base_url,
+            provider.credentials.api_base_url.as_deref(),
+            provider.get_api_base_url(),
+        );
 
-        match base_url {
+        match base_url.as_deref() {
             Some(base) => {
                 // 使用自定义 base_url (如 Yunyi)，与 CodexProvider 的 URL/headers 行为保持一致
                 let url = CodexProvider::build_responses_url(base);
@@ -1081,7 +1151,7 @@ impl ProviderPoolService {
                 }
             }
             None => {
-                // 没有自定义 base_url，使用 OpenAI 官方 chat/completions API
+                // 只有 API Key 模式才会走这里
                 self.check_openai_health(&token, None, model).await
             }
         }
