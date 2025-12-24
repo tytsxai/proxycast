@@ -702,15 +702,47 @@ pub async fn chat_completions(
         ),
     );
 
-    // 优先按路由结果选择凭证；如果没有可用凭证，再回退到默认 provider。
+    // 如果路由器使用的是默认 Provider（未命中任何规则），则优先使用 UI/端点配置的 Provider
+    let final_provider = if ctx.is_default_route {
+        selected_provider.clone()
+    } else {
+        routed_provider.clone()
+    };
+
+    state.logs.write().await.add(
+        "info",
+        &format!(
+            "[PROVIDER] request_id={} final_provider={} (routed={}, selected={}, is_default_route={})",
+            ctx.request_id, final_provider, routed_provider, selected_provider, ctx.is_default_route
+        ),
+    );
+
+    let final_provider_type = match final_provider.parse::<ProviderType>() {
+        Ok(value) => value,
+        Err(e) => {
+            state.logs.write().await.add(
+                "warn",
+                &format!(
+                    "[PROVIDER] request_id={} 解析 final_provider 失败: {}",
+                    ctx.request_id, e
+                ),
+            );
+            provider
+        }
+    };
+    if final_provider_type != provider {
+        ctx.set_provider(final_provider_type);
+    }
+
+    // 优先按最终选择的 provider 选择凭证；如果没有可用凭证，再回退到默认 provider。
     let credential = match &state.db {
         Some(db) => state
             .pool_service
-            .select_credential(db, &routed_provider, Some(&request.model))
+            .select_credential(db, &final_provider, Some(&request.model))
             .ok()
             .flatten()
             .or_else(|| {
-                if routed_provider != default_provider {
+                if final_provider != default_provider {
                     state
                         .pool_service
                         .select_credential(db, &default_provider, Some(&request.model))
@@ -725,6 +757,9 @@ pub async fn chat_completions(
 
     // 如果找到凭证池中的凭证，使用它
     if let Some(cred) = credential {
+        ctx.set_provider(cred.provider_type);
+        ctx.set_credential_id(cred.uuid.clone());
+
         state.logs.write().await.add(
             "info",
             &format!(
@@ -740,7 +775,7 @@ pub async fn chat_completions(
         // 启动 Flow 捕获
         let llm_request = build_llm_request_from_openai(&request, "/v1/chat/completions", &headers);
         let flow_metadata = build_flow_metadata(
-            provider,
+            cred.provider_type,
             Some(&cred.uuid),
             cred.name.as_deref(),
             &headers,
@@ -893,22 +928,22 @@ pub async fn chat_completions(
         return response;
     }
 
-    // 回退到旧的单凭证模式（仅当选择的 Provider 是 Kiro 时）
-    // 如果选择的 Provider 不是 Kiro，且凭证池中没有找到凭证，返回错误
+    // 回退到旧的单凭证模式（仅当最终 Provider 是 Kiro 时）
+    // 如果最终 Provider 不是 Kiro，且凭证池中没有找到凭证，返回错误
     // **Validates: Requirements 3.2**
-    if selected_provider.to_lowercase() != "kiro" {
+    if final_provider.to_lowercase() != "kiro" {
         state.logs.write().await.add(
             "error",
             &format!(
                 "[ROUTE] No pool credential found for '{}' (client_type={}), and legacy mode only supports Kiro",
-                selected_provider, client_type
+                final_provider, client_type
             ),
         );
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({
                 "error": {
-                    "message": format!("没有找到可用的 '{}' 凭证。请在凭证池中添加对应的凭证。", selected_provider),
+                    "message": format!("没有找到可用的 '{}' 凭证。请在凭证池中添加对应的凭证。", final_provider),
                     "type": "no_credential_error",
                     "code": "no_credential"
                 }
@@ -921,13 +956,14 @@ pub async fn chat_completions(
         "debug",
         &format!(
             "[ROUTE] No pool credential found for '{}', using legacy mode",
-            selected_provider
+            final_provider
         ),
     );
 
     // 启动 Flow 捕获（legacy mode）
     let llm_request = build_llm_request_from_openai(&request, "/v1/chat/completions", &headers);
-    let flow_metadata = build_flow_metadata(provider, None, None, &headers, &ctx.request_id);
+    let flow_metadata =
+        build_flow_metadata(final_provider_type, None, None, &headers, &ctx.request_id);
     let flow_id = state
         .flow_monitor
         .start_flow(llm_request.clone(), flow_metadata.clone())
@@ -1541,15 +1577,47 @@ pub async fn anthropic_messages(
         ),
     );
 
-    // 优先按路由结果选择凭证；如果没有可用凭证，再回退到默认 provider。
+    // 如果路由器使用的是默认 Provider（未命中任何规则），则优先使用 UI/端点配置的 Provider
+    let final_provider = if ctx.is_default_route {
+        selected_provider.clone()
+    } else {
+        routed_provider.clone()
+    };
+
+    state.logs.write().await.add(
+        "info",
+        &format!(
+            "[PROVIDER] request_id={} final_provider={} (routed={}, selected={}, is_default_route={})",
+            ctx.request_id, final_provider, routed_provider, selected_provider, ctx.is_default_route
+        ),
+    );
+
+    let final_provider_type = match final_provider.parse::<ProviderType>() {
+        Ok(value) => value,
+        Err(e) => {
+            state.logs.write().await.add(
+                "warn",
+                &format!(
+                    "[PROVIDER] request_id={} 解析 final_provider 失败: {}",
+                    ctx.request_id, e
+                ),
+            );
+            provider
+        }
+    };
+    if final_provider_type != provider {
+        ctx.set_provider(final_provider_type);
+    }
+
+    // 优先按最终选择的 provider 选择凭证；如果没有可用凭证，再回退到默认 provider。
     let credential = match &state.db {
         Some(db) => state
             .pool_service
-            .select_credential(db, &routed_provider, Some(&request.model))
+            .select_credential(db, &final_provider, Some(&request.model))
             .ok()
             .flatten()
             .or_else(|| {
-                if routed_provider != default_provider {
+                if final_provider != default_provider {
                     state
                         .pool_service
                         .select_credential(db, &default_provider, Some(&request.model))
@@ -1564,6 +1632,9 @@ pub async fn anthropic_messages(
 
     // 如果找到凭证池中的凭证，使用它
     if let Some(cred) = credential {
+        ctx.set_provider(cred.provider_type);
+        ctx.set_credential_id(cred.uuid.clone());
+
         state.logs.write().await.add(
             "info",
             &format!(
@@ -1579,7 +1650,7 @@ pub async fn anthropic_messages(
         // 启动 Flow 捕获
         let llm_request = build_llm_request_from_anthropic(&request, "/v1/messages", &headers);
         let flow_metadata = build_flow_metadata(
-            provider,
+            cred.provider_type,
             Some(&cred.uuid),
             cred.name.as_deref(),
             &headers,
@@ -1734,15 +1805,15 @@ pub async fn anthropic_messages(
         return response;
     }
 
-    // 回退到旧的单凭证模式（仅当选择的 Provider 是 Kiro 时）
-    // 如果选择的 Provider 不是 Kiro，且凭证池中没有找到凭证，返回错误
+    // 回退到旧的单凭证模式（仅当最终 Provider 是 Kiro 时）
+    // 如果最终 Provider 不是 Kiro，且凭证池中没有找到凭证，返回错误
     // **Validates: Requirements 3.2**
-    if selected_provider.to_lowercase() != "kiro" {
+    if final_provider.to_lowercase() != "kiro" {
         state.logs.write().await.add(
             "error",
             &format!(
                 "[ROUTE] No pool credential found for '{}' (client_type={}), and legacy mode only supports Kiro",
-                selected_provider, client_type
+                final_provider, client_type
             ),
         );
         return (
@@ -1751,7 +1822,7 @@ pub async fn anthropic_messages(
                 "type": "error",
                 "error": {
                     "type": "no_credential_error",
-                    "message": format!("没有找到可用的 '{}' 凭证。请在凭证池中添加对应的凭证。", selected_provider)
+                    "message": format!("没有找到可用的 '{}' 凭证。请在凭证池中添加对应的凭证。", final_provider)
                 }
             })),
         )
@@ -1762,13 +1833,14 @@ pub async fn anthropic_messages(
         "debug",
         &format!(
             "[ROUTE] No pool credential found for '{}', using legacy mode",
-            selected_provider
+            final_provider
         ),
     );
 
     // 启动 Flow 捕获（legacy mode）
     let llm_request = build_llm_request_from_anthropic(&request, "/v1/messages", &headers);
-    let flow_metadata = build_flow_metadata(provider, None, None, &headers, &ctx.request_id);
+    let flow_metadata =
+        build_flow_metadata(final_provider_type, None, None, &headers, &ctx.request_id);
     let flow_id = state
         .flow_monitor
         .start_flow(llm_request.clone(), flow_metadata.clone())

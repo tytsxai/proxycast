@@ -190,14 +190,39 @@ impl ProviderPoolService {
             available.retain(|c| c.supports_model(m));
         }
 
+        let mut selected_provider_type = provider_type;
         if available.is_empty() {
-            return Ok(None);
+            if provider_type == "openai" {
+                let codex_pt: PoolProviderType = "codex".parse().map_err(|e: String| e)?;
+                let conn = db.lock().map_err(|e| e.to_string())?;
+                let credentials =
+                    ProviderPoolDao::get_by_type(&conn, &codex_pt).map_err(|e| e.to_string())?;
+                drop(conn);
+
+                let mut codex_available: Vec<_> = credentials
+                    .into_iter()
+                    .filter(|c| c.is_available())
+                    .collect();
+
+                if let Some(m) = model {
+                    codex_available.retain(|c| c.supports_model(m));
+                }
+
+                if codex_available.is_empty() {
+                    return Ok(None);
+                }
+
+                available = codex_available;
+                selected_provider_type = "codex";
+            } else {
+                return Ok(None);
+            }
         }
 
         // 轮询选择
         let index_key = match model {
-            Some(m) => format!("{}:{}", provider_type, m),
-            None => provider_type.to_string(),
+            Some(m) => format!("{}:{}", selected_provider_type, m),
+            None => selected_provider_type.to_string(),
         };
 
         let index = {

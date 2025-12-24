@@ -423,6 +423,30 @@ impl CodexProvider {
         }
     }
 
+    fn normalize_credential_json(mut json_value: serde_json::Value) -> serde_json::Value {
+        if let Some(obj) = json_value.as_object_mut() {
+            // 处理 api_key 字段别名冲突
+            // 优先级: api_key > apiKey > OPENAI_API_KEY
+            let api_key_value = obj
+                .get("api_key")
+                .or_else(|| obj.get("apiKey"))
+                .or_else(|| obj.get("OPENAI_API_KEY"))
+                .cloned();
+
+            if api_key_value.is_some() {
+                // 移除所有别名字段
+                obj.remove("apiKey");
+                obj.remove("OPENAI_API_KEY");
+                // 只保留标准字段名
+                if let Some(value) = api_key_value {
+                    obj.insert("api_key".to_string(), value);
+                }
+            }
+        }
+
+        json_value
+    }
+
     /// Get the default credentials file path
     pub fn default_creds_path() -> PathBuf {
         dirs::home_dir()
@@ -520,8 +544,20 @@ impl CodexProvider {
         if tokio::fs::try_exists(&path).await.unwrap_or(false) {
             let content = tokio::fs::read_to_string(&path).await?;
 
+            // 预处理：清理可能冲突的别名字段
+            let json_value: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+                tracing::error!(
+                    "[CODEX] 凭证文件 JSON 解析失败: {}. 文件路径: {:?}",
+                    e,
+                    path
+                );
+                format!("凭证文件格式错误: {}", e)
+            })?;
+
+            let json_value = Self::normalize_credential_json(json_value);
+
             // 尝试解析凭证文件
-            let creds: CodexCredentials = serde_json::from_str(&content).map_err(|e| {
+            let creds: CodexCredentials = serde_json::from_value(json_value).map_err(|e| {
                 tracing::error!("[CODEX] 凭证文件解析失败: {}. 文件路径: {:?}", e, path);
                 format!("凭证文件格式错误: {}", e)
             })?;
@@ -1513,6 +1549,32 @@ mod tests {
         let parsed: CodexCredentials = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.access_token, creds.access_token);
         assert_eq!(parsed.email, creds.email);
+    }
+
+    #[test]
+    fn test_normalize_credential_json_prefers_api_key() {
+        let v = serde_json::json!({
+            "api_key": "a",
+            "apiKey": "b",
+            "OPENAI_API_KEY": "c"
+        });
+        let out = CodexProvider::normalize_credential_json(v);
+        assert_eq!(out["api_key"], "a");
+        assert!(out.get("apiKey").is_none());
+        assert!(out.get("OPENAI_API_KEY").is_none());
+    }
+
+    #[test]
+    fn test_normalize_credential_json_falls_back_to_aliases() {
+        let v = serde_json::json!({ "apiKey": "b" });
+        let out = CodexProvider::normalize_credential_json(v);
+        assert_eq!(out["api_key"], "b");
+        assert!(out.get("apiKey").is_none());
+
+        let v = serde_json::json!({ "OPENAI_API_KEY": "c" });
+        let out = CodexProvider::normalize_credential_json(v);
+        assert_eq!(out["api_key"], "c");
+        assert!(out.get("OPENAI_API_KEY").is_none());
     }
 
     #[test]

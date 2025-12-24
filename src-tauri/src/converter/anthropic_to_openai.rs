@@ -49,6 +49,7 @@ pub fn convert_anthropic_to_openai(request: &AnthropicMessagesRequest) -> ChatCo
         stream: request.stream,
         tools,
         tool_choice: request.tool_choice.clone(),
+        reasoning_effort: None,
     }
 }
 

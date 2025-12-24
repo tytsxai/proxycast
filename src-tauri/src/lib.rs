@@ -1,3 +1,4 @@
+pub mod codex_config_loader;
 mod commands;
 mod config;
 mod converter;
@@ -37,11 +38,13 @@ use commands::provider_pool_cmd::{CredentialSyncServiceState, ProviderPoolServic
 use commands::resilience_cmd::ResilienceConfigState;
 use commands::router_cmd::RouterConfigState;
 use commands::skill_cmd::SkillServiceState;
+use database::dao::provider_pool::ProviderPoolDao;
 use flow_monitor::{
     BatchOperations, BookmarkManager, EnhancedStatsService, FlowFileStore, FlowInterceptor,
     FlowMonitor, FlowMonitorConfig, FlowQueryService, FlowReplayer, InterceptConfig,
     QuickFilterManager, SessionManager,
 };
+use models::provider_pool_model::{CredentialData, CredentialSource, PoolProviderType};
 use services::provider_pool_service::ProviderPoolService;
 use services::skill_service::SkillService;
 use services::token_cache_service::TokenCacheService;
@@ -1160,6 +1163,7 @@ async fn check_api_compatibility(
                         },
                     }]),
                     tool_choice: None,
+                    reasoning_effort: None,
                 }
             }
             _ => {
@@ -1179,6 +1183,7 @@ async fn check_api_compatibility(
                     stream: false,
                     tools: None,
                     tool_choice: None,
+                    reasoning_effort: None,
                 }
             }
         };
@@ -1738,6 +1743,82 @@ pub fn run() {
                     app.manage(tray_state);
                 }
             }
+            // 自动导入 Codex CLI 配置
+            let codex_pool_service = pool_service_clone.clone();
+            let codex_db = db_clone.clone();
+            tauri::async_runtime::spawn(async move {
+                let Some(config) = codex_config_loader::load_codex_cli_config().await else {
+                    tracing::info!("[启动] 未发现 Codex CLI 配置，跳过自动导入");
+                    return;
+                };
+
+                let new_credential = config.credential.credential;
+                let (new_path, new_base_url) = match &new_credential {
+                    CredentialData::CodexOAuth {
+                        creds_file_path,
+                        api_base_url,
+                    } => (creds_file_path.clone(), api_base_url.clone()),
+                    _ => {
+                        tracing::warn!("[启动] Codex CLI 配置类型异常，跳过导入");
+                        return;
+                    }
+                };
+
+                let conn = match codex_db.lock() {
+                    Ok(conn) => conn,
+                    Err(e) => {
+                        tracing::error!("[启动] 获取数据库连接失败，跳过 Codex CLI 导入: {}", e);
+                        return;
+                    }
+                };
+                let codex_type: PoolProviderType = match "codex".parse() {
+                    Ok(value) => value,
+                    Err(e) => {
+                        tracing::error!("[启动] 解析 Codex provider 类型失败: {}", e);
+                        return;
+                    }
+                };
+                let existing = match ProviderPoolDao::get_by_type(&conn, &codex_type) {
+                    Ok(list) => list,
+                    Err(e) => {
+                        tracing::error!("[启动] 查询 Codex 凭证失败，跳过导入: {}", e);
+                        return;
+                    }
+                };
+                let duplicated = existing.iter().any(|cred| match &cred.credential {
+                    CredentialData::CodexOAuth {
+                        creds_file_path,
+                        api_base_url,
+                    } => creds_file_path == &new_path && api_base_url == &new_base_url,
+                    _ => false,
+                });
+                drop(conn);
+
+                if duplicated {
+                    tracing::info!("[启动] Codex CLI 凭证已存在于凭证池，跳过导入");
+                    return;
+                }
+
+                match codex_pool_service.add_credential_with_source(
+                    &codex_db,
+                    "codex",
+                    new_credential,
+                    None,
+                    Some(true),
+                    None,
+                    CredentialSource::Imported,
+                ) {
+                    Ok(credential) => {
+                        tracing::info!(
+                            "[启动] 成功导入 Codex CLI 配置到凭证池: {}",
+                            credential.uuid
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!("[启动] 导入 Codex CLI 配置失败: {}", e);
+                    }
+                }
+            });
             // 自动启动服务器
             let state = state_clone.clone();
             let logs = logs_clone.clone();

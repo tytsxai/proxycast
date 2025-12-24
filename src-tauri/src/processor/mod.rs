@@ -194,6 +194,7 @@ impl RequestProcessor {
     pub async fn route_for_context(&self, ctx: &mut RequestContext) -> crate::ProviderType {
         let (provider, is_default) = self.route_model(&ctx.resolved_model).await;
         ctx.set_provider(provider);
+        ctx.set_is_default_route(is_default);
 
         tracing::info!(
             "[ROUTE] request_id={} model={} provider={} is_default={}",

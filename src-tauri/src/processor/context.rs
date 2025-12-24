@@ -24,6 +24,8 @@ pub struct RequestContext {
     pub resolved_model: String,
     /// 选择的 Provider
     pub provider: Option<ProviderType>,
+    /// 路由是否使用默认 Provider（未命中任何规则）
+    pub is_default_route: bool,
     /// 使用的凭证 ID
     pub credential_id: Option<String>,
     /// 重试次数
@@ -47,6 +49,7 @@ impl RequestContext {
             original_model: model.clone(),
             resolved_model: model,
             provider: None,
+            is_default_route: false,
             credential_id: None,
             retry_count: 0,
             is_stream: false,
@@ -64,6 +67,11 @@ impl RequestContext {
     /// 设置 Provider
     pub fn set_provider(&mut self, provider: ProviderType) {
         self.provider = Some(provider);
+    }
+
+    /// 设置路由是否使用默认 Provider
+    pub fn set_is_default_route(&mut self, is_default: bool) {
+        self.is_default_route = is_default;
     }
 
     /// 设置凭证 ID
@@ -129,6 +137,7 @@ mod tests {
         assert_eq!(ctx.original_model, "claude-sonnet-4-5");
         assert_eq!(ctx.resolved_model, "claude-sonnet-4-5");
         assert!(ctx.provider.is_none());
+        assert!(!ctx.is_default_route);
         assert!(ctx.credential_id.is_none());
         assert_eq!(ctx.retry_count, 0);
         assert!(!ctx.is_stream);
