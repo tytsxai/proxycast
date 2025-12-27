@@ -78,6 +78,10 @@
 - **远程管理 API** - 通过 API 远程管理配置和凭证
 - **访问控制** - 支持 localhost 限制和密钥认证
 
+#### ⚠️ 安全变更提示
+- WebSocket 接口（`/v1/ws`、`/ws`）现在必须携带 API Key（Header 或 URL 参数），不再允许匿名连接。
+- Antigravity / iFlow 的 OAuth `client_secret` 不再内置在代码中：请分别设置环境变量 `ANTIGRAVITY_OAUTH_CLIENT_SECRET`、`IFLOW_CLIENT_SECRET`。
+
 ### 🔌 多路由支持
 - 支持 `/api/provider/{provider}/v1/*` 路由模式
 - 模型映射 - 将请求模型映射到 Provider 支持的模型
