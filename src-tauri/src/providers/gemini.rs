@@ -268,12 +268,14 @@ impl GeminiProvider {
 
         tracing::info!("[GEMINI] 正在刷新 Token");
 
-        let params = [
+        let mut params = vec![
             ("client_id", client_id.as_str()),
-            ("client_secret", client_secret.as_str()),
             ("refresh_token", refresh_token.as_str()),
             ("grant_type", "refresh_token"),
         ];
+        if !client_secret.is_empty() {
+            params.push(("client_secret", client_secret.as_str()));
+        }
 
         let resp = self
             .client
@@ -761,7 +763,6 @@ use uuid::Uuid;
 // Gemini CLI OAuth 配置 - 与 claude-relay-service 对齐
 pub const GEMINI_OAUTH_CLIENT_ID: &str =
     "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com";
-pub const GEMINI_OAUTH_CLIENT_SECRET: &str = "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";
 pub const GEMINI_OAUTH_SCOPES: &[&str] = &["https://www.googleapis.com/auth/cloud-platform"];
 pub const GEMINI_OAUTH_REDIRECT_URI: &str = "https://codeassist.google.com/authcode";
 
@@ -928,14 +929,17 @@ pub async fn exchange_gemini_code_for_token(
     code: &str,
     code_verifier: &str,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
-    let params = [
+    let client_secret = get_oauth_client_secret();
+    let mut params = vec![
         ("code", code),
         ("client_id", GEMINI_OAUTH_CLIENT_ID),
-        ("client_secret", GEMINI_OAUTH_CLIENT_SECRET),
         ("code_verifier", code_verifier),
         ("redirect_uri", GEMINI_OAUTH_REDIRECT_URI),
         ("grant_type", "authorization_code"),
     ];
+    if !client_secret.is_empty() {
+        params.push(("client_secret", client_secret.as_str()));
+    }
 
     let resp = client.post(GEMINI_TOKEN_URL).form(&params).send().await?;
 

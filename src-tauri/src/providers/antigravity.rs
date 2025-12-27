@@ -22,7 +22,14 @@ const CREDENTIALS_FILE: &str = "oauth_creds.json";
 // OAuth credentials - 与 Antigravity CLI 相同
 pub const OAUTH_CLIENT_ID: &str =
     "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
-pub const OAUTH_CLIENT_SECRET: &str = "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";
+
+fn get_oauth_client_secret() -> Result<String, Box<dyn Error + Send + Sync>> {
+    let secret = std::env::var("ANTIGRAVITY_OAUTH_CLIENT_SECRET").unwrap_or_default();
+    if secret.is_empty() {
+        return Err("未设置环境变量 ANTIGRAVITY_OAUTH_CLIENT_SECRET".into());
+    }
+    Ok(secret)
+}
 
 // OAuth scopes
 const OAUTH_SCOPES: &[&str] = &[
@@ -335,9 +342,11 @@ impl AntigravityProvider {
             .as_ref()
             .ok_or("No refresh token available")?;
 
+        let client_secret = get_oauth_client_secret()?;
+
         let params = [
             ("client_id", OAUTH_CLIENT_ID),
-            ("client_secret", OAUTH_CLIENT_SECRET),
+            ("client_secret", client_secret.as_str()),
             ("refresh_token", refresh_token.as_str()),
             ("grant_type", "refresh_token"),
         ];
@@ -667,10 +676,11 @@ pub async fn exchange_code_for_token(
     code: &str,
     redirect_uri: &str,
 ) -> Result<serde_json::Value, Box<dyn Error + Send + Sync>> {
+    let client_secret = get_oauth_client_secret()?;
     let params = [
         ("code", code),
         ("client_id", OAUTH_CLIENT_ID),
-        ("client_secret", OAUTH_CLIENT_SECRET),
+        ("client_secret", client_secret.as_str()),
         ("redirect_uri", redirect_uri),
         ("grant_type", "authorization_code"),
     ];

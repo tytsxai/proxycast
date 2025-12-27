@@ -20,7 +20,14 @@ const IFLOW_API_KEY_URL: &str = "https://platform.iflow.cn/api/openapi/apikey";
 
 // 客户端凭证 - 与 CLIProxyAPI 完全一致
 const IFLOW_CLIENT_ID: &str = "10009311001";
-const IFLOW_CLIENT_SECRET: &str = "4Z3YjXycVsQvyGF1etiNlIBB4RsqSDtW";
+
+fn get_iflow_client_secret() -> Result<String, Box<dyn Error + Send + Sync>> {
+    let secret = std::env::var("IFLOW_CLIENT_SECRET").unwrap_or_default();
+    if secret.is_empty() {
+        return Err(create_config_error("未设置环境变量 IFLOW_CLIENT_SECRET"));
+    }
+    Ok(secret)
+}
 
 const DEFAULT_CALLBACK_PORT: u16 = 11451;
 const IFLOW_API_BASE_URL: &str = "https://apis.iflow.cn/v1";
@@ -699,15 +706,16 @@ impl IFlowProvider {
 
         tracing::info!("[IFLOW] 正在刷新 Token");
 
+        let client_secret = get_iflow_client_secret()?;
+
         // 构建 Basic Auth 头 - 与 CLIProxyAPI 对齐
-        let basic_auth =
-            BASE64_STANDARD.encode(format!("{}:{}", IFLOW_CLIENT_ID, IFLOW_CLIENT_SECRET));
+        let basic_auth = BASE64_STANDARD.encode(format!("{}:{}", IFLOW_CLIENT_ID, client_secret));
 
         let params = [
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token.as_str()),
             ("client_id", IFLOW_CLIENT_ID),
-            ("client_secret", IFLOW_CLIENT_SECRET),
+            ("client_secret", client_secret.as_str()),
         ];
 
         let resp = self
@@ -1665,15 +1673,16 @@ pub async fn exchange_iflow_code_for_token(
     code: &str,
     redirect_uri: &str,
 ) -> Result<IFlowCredentials, Box<dyn Error + Send + Sync>> {
+    let client_secret = get_iflow_client_secret()?;
     // 构建 Basic Auth 头
-    let basic_auth = BASE64_STANDARD.encode(format!("{}:{}", IFLOW_CLIENT_ID, IFLOW_CLIENT_SECRET));
+    let basic_auth = BASE64_STANDARD.encode(format!("{}:{}", IFLOW_CLIENT_ID, client_secret));
 
     let params = [
         ("grant_type", "authorization_code"),
         ("code", code),
         ("redirect_uri", redirect_uri),
         ("client_id", IFLOW_CLIENT_ID),
-        ("client_secret", IFLOW_CLIENT_SECRET),
+        ("client_secret", client_secret.as_str()),
     ];
 
     let resp = client
