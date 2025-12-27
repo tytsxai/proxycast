@@ -11,7 +11,7 @@ use super::path_utils::expand_tilde;
 use super::types::{ApiKeyEntry, Config, CredentialEntry, CredentialPoolConfig};
 use super::yaml::{ConfigError, ConfigManager, YamlService};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Component, Path};
 
 /// 导入选项
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -435,11 +435,56 @@ impl ImportService {
         let mut warnings = Vec::new();
         let auth_path = expand_tilde(auth_dir);
 
+        fn is_safe_relative_path(rel: &Path) -> bool {
+            if rel.as_os_str().is_empty() || rel.is_absolute() {
+                return false;
+            }
+
+            rel.components().all(|c| match c {
+                Component::Normal(_) => true,
+                Component::CurDir => true,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_) => false,
+            })
+        }
+
+        fn has_symlink_in_prefix(base: &Path, rel: &Path) -> bool {
+            let mut current = base.to_path_buf();
+            for c in rel.components() {
+                let Component::Normal(part) = c else {
+                    continue;
+                };
+                current.push(part);
+                if let Ok(meta) = std::fs::symlink_metadata(&current) {
+                    if meta.file_type().is_symlink() {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+
         // 确保 auth_dir 存在
         std::fs::create_dir_all(&auth_path)?;
 
         for (relative_path, base64_content) in token_files {
-            let token_path = auth_path.join(relative_path);
+            let rel = Path::new(relative_path);
+            if !is_safe_relative_path(rel) {
+                warnings.push(format!(
+                    "忽略不安全的 token 路径（可能存在路径穿越）: {}",
+                    relative_path
+                ));
+                continue;
+            }
+
+            if has_symlink_in_prefix(&auth_path, rel) {
+                warnings.push(format!(
+                    "忽略 token 路径（检测到符号链接路径段）: {}",
+                    relative_path
+                ));
+                continue;
+            }
+
+            let token_path = auth_path.join(rel);
 
             // 确保父目录存在
             if let Some(parent) = token_path.parent() {
@@ -548,6 +593,9 @@ impl ImportService {
 #[cfg(test)]
 mod unit_tests {
     use super::*;
+
+    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+    use base64::Engine;
 
     #[test]
     fn test_import_options_default() {
@@ -787,5 +835,54 @@ credential_pool:
 
         let err = ImportError::RedactedDataError("test".to_string());
         assert!(err.to_string().contains("脱敏数据"));
+    }
+
+    #[test]
+    fn test_restore_token_files_rejects_path_traversal() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let auth_dir = base.path().join("auth");
+        let outside = base.path().join("outside.txt");
+
+        let mut token_files = std::collections::HashMap::new();
+        token_files.insert(
+            "../outside.txt".to_string(),
+            BASE64_STANDARD.encode(b"pwned"),
+        );
+        token_files.insert("good/token.json".to_string(), BASE64_STANDARD.encode(b"ok"));
+
+        let warnings =
+            ImportService::restore_token_files(&token_files, auth_dir.to_string_lossy().as_ref())
+                .expect("restore_token_files");
+
+        assert!(warnings.iter().any(|w| w.contains("路径穿越")));
+        assert!(!outside.exists());
+        assert!(auth_dir.join("good/token.json").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_restore_token_files_rejects_symlink_prefix() {
+        use std::os::unix::fs::symlink;
+
+        let base = tempfile::tempdir().expect("tempdir");
+        let auth_dir = base.path().join("auth");
+        std::fs::create_dir_all(&auth_dir).expect("create auth_dir");
+
+        let outside_dir = base.path().join("outside");
+        std::fs::create_dir_all(&outside_dir).expect("create outside_dir");
+        symlink(&outside_dir, auth_dir.join("linked")).expect("create symlink");
+
+        let mut token_files = std::collections::HashMap::new();
+        token_files.insert(
+            "linked/evil.txt".to_string(),
+            BASE64_STANDARD.encode(b"pwned"),
+        );
+
+        let warnings =
+            ImportService::restore_token_files(&token_files, auth_dir.to_string_lossy().as_ref())
+                .expect("restore_token_files");
+
+        assert!(warnings.iter().any(|w| w.contains("符号链接")));
+        assert!(!outside_dir.join("evil.txt").exists());
     }
 }

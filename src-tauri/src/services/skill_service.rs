@@ -2,7 +2,8 @@ use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::io::{Read, Seek};
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 use tokio::time::timeout;
 
@@ -12,6 +13,72 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct SkillService {
     client: Client,
+}
+
+fn extract_skill_from_zip<R: Read + Seek>(
+    mut archive: zip::ZipArchive<R>,
+    target_dir: &Path,
+    directory: &str,
+) -> Result<()> {
+    // 查找并解压技能目录（防止 Zip Slip）
+    let mut found = false;
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+
+        let Some(entry_path) = file.enclosed_name().map(|p| p.to_owned()) else {
+            continue;
+        };
+
+        // GitHub zip 结构通常是: {repo}-{branch}/{directory}/...
+        let root = match entry_path.components().next() {
+            Some(Component::Normal(s)) => s,
+            _ => continue,
+        };
+
+        let expected_prefix = Path::new(root).join(directory);
+        if !entry_path.starts_with(&expected_prefix) {
+            continue;
+        }
+
+        found = true;
+
+        let rel = entry_path
+            .strip_prefix(&expected_prefix)
+            .unwrap_or_else(|_| Path::new(""));
+
+        if rel.as_os_str().is_empty() {
+            continue;
+        }
+
+        // 二次校验：防止形如 "skill/../evil" 绕过 prefix 检查
+        if rel.components().any(|c| {
+            matches!(
+                c,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        }) {
+            continue;
+        }
+
+        let output_path = target_dir.join(rel);
+
+        if file.is_dir() {
+            fs::create_dir_all(&output_path)?;
+        } else {
+            if let Some(parent) = output_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let mut output_file = fs::File::create(&output_path)?;
+            std::io::copy(&mut file, &mut output_file)?;
+        }
+    }
+
+    if !found {
+        return Err(anyhow!("Skill directory not found in archive"));
+    }
+
+    Ok(())
 }
 
 impl SkillService {
@@ -282,45 +349,8 @@ impl SkillService {
 
         let bytes = response.bytes().await.context("Failed to read response")?;
         let cursor = std::io::Cursor::new(bytes);
-        let mut archive = zip::ZipArchive::new(cursor).context("Failed to open ZIP")?;
-
-        // 查找技能目录
-        let skill_prefix = format!("/{}/", directory);
-        let mut found = false;
-
-        for i in 0..archive.len() {
-            let mut file = archive.by_index(i)?;
-            let file_path = file.name().to_string();
-
-            if file_path.contains(&skill_prefix) {
-                found = true;
-                let relative_path = file_path
-                    .split(&skill_prefix)
-                    .nth(1)
-                    .unwrap_or("")
-                    .to_string();
-
-                if !relative_path.is_empty() {
-                    let output_path = target_dir.join(&relative_path);
-
-                    if file.is_dir() {
-                        fs::create_dir_all(&output_path)?;
-                    } else {
-                        if let Some(parent) = output_path.parent() {
-                            fs::create_dir_all(parent)?;
-                        }
-                        let mut output_file = fs::File::create(&output_path)?;
-                        std::io::copy(&mut file, &mut output_file)?;
-                    }
-                }
-            }
-        }
-
-        if !found {
-            return Err(anyhow!("Skill directory not found in archive"));
-        }
-
-        Ok(())
+        let archive = zip::ZipArchive::new(cursor).context("Failed to open ZIP")?;
+        extract_skill_from_zip(archive, target_dir, directory)
     }
 
     /// 卸载技能
@@ -358,5 +388,66 @@ impl SkillService {
             serde_yaml::from_str(front_matter).context("Failed to parse YAML front matter")?;
 
         Ok(meta)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn test_extract_skill_from_zip_blocks_zip_slip() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let target_dir = tmp.path().join("target");
+        std::fs::create_dir_all(&target_dir).expect("create target_dir");
+
+        let cursor = std::io::Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(cursor);
+        let opts = zip::write::FileOptions::default();
+
+        zip.start_file("repo-main/skill/ok.txt", opts)
+            .expect("start ok.txt");
+        zip.write_all(b"ok").expect("write ok");
+
+        zip.start_file("repo-main/skill/../evil.txt", opts)
+            .expect("start evil.txt");
+        zip.write_all(b"pwned").expect("write evil");
+
+        zip.start_file("repo-main/other/ignore.txt", opts)
+            .expect("start ignore.txt");
+        zip.write_all(b"ignore").expect("write ignore");
+
+        let cursor = zip.finish().expect("finish zip");
+        let bytes = cursor.into_inner();
+        let archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("open zip");
+
+        extract_skill_from_zip(archive, &target_dir, "skill").expect("extract");
+
+        assert!(target_dir.join("ok.txt").exists());
+        assert!(!tmp.path().join("evil.txt").exists());
+        assert!(!target_dir.join("ignore.txt").exists());
+    }
+
+    #[test]
+    fn test_extract_skill_from_zip_requires_directory_present() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let target_dir = tmp.path().join("target");
+        std::fs::create_dir_all(&target_dir).expect("create target_dir");
+
+        let cursor = std::io::Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(cursor);
+        let opts = zip::write::FileOptions::default();
+
+        zip.start_file("repo-main/other/file.txt", opts)
+            .expect("start file.txt");
+        zip.write_all(b"x").expect("write x");
+
+        let cursor = zip.finish().expect("finish zip");
+        let bytes = cursor.into_inner();
+        let archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("open zip");
+
+        let err = extract_skill_from_zip(archive, &target_dir, "skill").unwrap_err();
+        assert!(err.to_string().contains("Skill directory not found"));
     }
 }
