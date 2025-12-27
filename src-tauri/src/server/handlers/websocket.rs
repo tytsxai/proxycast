@@ -58,29 +58,27 @@ pub async fn ws_upgrade_handler(
     let key = match auth {
         Some(s) if s.starts_with("Bearer ") => Some(&s[7..]),
         Some(s) => Some(s),
-        None => {
-            // 尝试从 URL 参数获取
-            params.api_key.as_deref().or(params.token.as_deref())
-        }
+        None => params.api_key.as_deref().or(params.token.as_deref()),
     };
 
-    // 如果没有提供任何认证信息，允许连接（用于内部 Flow Monitor）
-    // 但会在日志中记录
-    let authenticated = match key {
-        Some(k) if k == state.api_key => true,
-        Some(_) => {
+    let key = match key {
+        Some(k) => k,
+        None => {
             return axum::http::Response::builder()
                 .status(401)
-                .body(Body::from("Invalid API key"))
+                .body(Body::from("No API key provided"))
                 .unwrap()
                 .into_response();
         }
-        None => {
-            // 允许无认证连接（仅用于本地 Flow Monitor UI）
-            tracing::debug!("[WS] Allowing unauthenticated connection for Flow Monitor");
-            false
-        }
     };
+
+    if key != state.api_key {
+        return axum::http::Response::builder()
+            .status(401)
+            .body(Body::from("Invalid API key"))
+            .unwrap()
+            .into_response();
+    }
 
     // 获取客户端信息
     let client_info = headers
@@ -88,16 +86,11 @@ pub async fn ws_upgrade_handler(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    ws.on_upgrade(move |socket| handle_websocket(socket, state, client_info, authenticated))
+    ws.on_upgrade(move |socket| handle_websocket(socket, state, client_info))
 }
 
 /// 处理 WebSocket 连接
-pub async fn handle_websocket(
-    socket: WebSocket,
-    state: AppState,
-    client_info: Option<String>,
-    authenticated: bool,
-) {
+pub async fn handle_websocket(socket: WebSocket, state: AppState, client_info: Option<String>) {
     let conn_id = uuid::Uuid::new_v4().to_string();
 
     // 注册连接
@@ -115,10 +108,9 @@ pub async fn handle_websocket(
     state.logs.write().await.add(
         "info",
         &format!(
-            "[WS] New connection: {} (client: {:?}, authenticated: {})",
+            "[WS] New connection: {} (client: {:?})",
             &conn_id[..8],
-            client_info,
-            authenticated
+            client_info
         ),
     );
 
@@ -152,11 +144,7 @@ pub async fn handle_websocket(
 
                     if let Ok(msg_text) = serde_json::to_string(&ws_msg) {
                         let mut sender_guard = flow_sender.lock().await;
-                        if sender_guard
-                            .send(WsMessage::Text(msg_text.into()))
-                            .await
-                            .is_err()
-                        {
+                        if sender_guard.send(WsMessage::Text(msg_text)).await.is_err() {
                             tracing::debug!(
                                 "[WS] Flow event send failed for connection {}",
                                 &conn_id_clone[..8]
@@ -187,6 +175,21 @@ pub async fn handle_websocket(
     while let Some(msg) = receiver.next().await {
         match msg {
             Ok(WsMessage::Text(text)) => {
+                // 限制消息大小防止 DoS
+                const MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024; // 10MB
+                if text.len() > MAX_MESSAGE_SIZE {
+                    state.ws_manager.on_error();
+                    let error = WsProtoMessage::Error(WsError::invalid_message(format!(
+                        "Message too large: {} bytes (max: {} bytes)",
+                        text.len(),
+                        MAX_MESSAGE_SIZE
+                    )));
+                    let error_text = serde_json::to_string(&error).unwrap_or_default();
+                    let mut sender_guard = sender.lock().await;
+                    let _ = sender_guard.send(WsMessage::Text(error_text)).await;
+                    break;
+                }
+
                 state.ws_manager.on_message();
                 state.ws_manager.increment_request_count(&conn_id);
 
@@ -197,11 +200,7 @@ pub async fn handle_websocket(
                         if let Some(resp) = response {
                             let resp_text = serde_json::to_string(&resp).unwrap_or_default();
                             let mut sender_guard = sender.lock().await;
-                            if sender_guard
-                                .send(WsMessage::Text(resp_text.into()))
-                                .await
-                                .is_err()
-                            {
+                            if sender_guard.send(WsMessage::Text(resp_text)).await.is_err() {
                                 break;
                             }
                         }
@@ -215,7 +214,7 @@ pub async fn handle_websocket(
                         let error_text = serde_json::to_string(&error).unwrap_or_default();
                         let mut sender_guard = sender.lock().await;
                         if sender_guard
-                            .send(WsMessage::Text(error_text.into()))
+                            .send(WsMessage::Text(error_text))
                             .await
                             .is_err()
                         {
@@ -232,7 +231,7 @@ pub async fn handle_websocket(
                 let error_text = serde_json::to_string(&error).unwrap_or_default();
                 let mut sender_guard = sender.lock().await;
                 if sender_guard
-                    .send(WsMessage::Text(error_text.into()))
+                    .send(WsMessage::Text(error_text))
                     .await
                     .is_err()
                 {
