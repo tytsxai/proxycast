@@ -16,7 +16,32 @@ export const ProviderIcon: React.FC<ProviderIconProps> = ({
   showFallback = true,
 }) => {
   const iconName = providerTypeToIcon[providerType] || providerType;
-  const iconSvg = providerIcons[iconName];
+  const iconSvg = useMemo(() => {
+    if (!Object.prototype.hasOwnProperty.call(providerIcons, iconName)) {
+      return undefined;
+    }
+
+    const svg = providerIcons[iconName];
+    const s = svg.trimStart();
+
+    if (!s.toLowerCase().startsWith("<svg")) {
+      return undefined;
+    }
+    if (/<\s*script\b/i.test(s)) {
+      return undefined;
+    }
+    if (/<\s*foreignobject\b/i.test(s)) {
+      return undefined;
+    }
+    if (/\son[a-z]+\s*=/i.test(s)) {
+      return undefined;
+    }
+    if (/javascript\s*:/i.test(s)) {
+      return undefined;
+    }
+
+    return svg;
+  }, [iconName]);
 
   const sizeStyle = useMemo(() => {
     const sizeValue = typeof size === "number" ? `${size}px` : size;

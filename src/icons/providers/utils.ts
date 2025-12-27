@@ -48,12 +48,15 @@ export const providerIcons: Record<string, string> = {
 // 导出图标名称检查函数
 export const hasProviderIcon = (providerType: string): boolean => {
   const iconName = providerTypeToIcon[providerType] || providerType;
-  return iconName in providerIcons;
+  return Object.prototype.hasOwnProperty.call(providerIcons, iconName);
 };
 
 // 导出获取图标 SVG 函数
 export const getProviderIcon = (providerType: string): string | undefined => {
   const iconName = providerTypeToIcon[providerType] || providerType;
+  if (!Object.prototype.hasOwnProperty.call(providerIcons, iconName)) {
+    return undefined;
+  }
   return providerIcons[iconName];
 };
 

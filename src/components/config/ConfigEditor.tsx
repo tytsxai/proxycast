@@ -8,9 +8,17 @@ interface ConfigEditorProps {
 }
 
 // Simple YAML syntax highlighter
+function escapeHtmlForYamlHighlight(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 function highlightYaml(yaml: string): string {
+  const escaped = escapeHtmlForYamlHighlight(yaml);
   return (
-    yaml
+    escaped
       // Comments
       .replace(/(#.*$)/gm, '<span class="yaml-comment">$1</span>')
       // Keys (before colon)
